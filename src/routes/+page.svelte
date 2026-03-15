@@ -4,6 +4,7 @@
 	import { listen } from "@tauri-apps/api/event";
 	import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 	import { open } from "@tauri-apps/plugin-dialog";
+	import { check } from "@tauri-apps/plugin-updater";
 	import {
 		renderMarkdown,
 		extractToc,
@@ -52,6 +53,12 @@
 	let editOrbitParticles: {id: number, size: number, duration: number, opacity: number, stagger: number}[] = [];
 
 	let particles: {id: number, left: number, size: number, duration: number, delay: number, opacity: number}[] = [];
+
+	const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+	const modLabel = isMac ? '⌘' : 'Ctrl+';
+	function isModKey(e: KeyboardEvent): boolean {
+		return isMac ? e.metaKey : e.ctrlKey;
+	}
 
 	$: if ($focusMode && typeof window !== "undefined") {
 		if (particles.length === 0) {
@@ -143,13 +150,13 @@
 		setTimeout(checkInitialFile, 200);
 
 		const handleKeydown = (e: KeyboardEvent) => {
-			if (e.ctrlKey && e.key === "o") {
+			if (isModKey(e) && e.key === "o") {
 				e.preventDefault();
 				openFileDialog();
 				return;
 			}
 
-			if (e.ctrlKey && e.key === "f") {
+			if (isModKey(e) && e.key === "f") {
 				e.preventDefault();
 				$searchOpen = !$searchOpen;
 				if ($searchOpen) {
@@ -179,13 +186,13 @@
 				return;
 			}
 
-			if (e.ctrlKey && e.key === "t") {
+			if (isModKey(e) && e.key === "t") {
 				e.preventDefault();
 				$tocOpen = !$tocOpen;
 				return;
 			}
 
-			if (e.key === "F11" || (e.ctrlKey && e.shiftKey && e.key === "F")) {
+			if (e.key === "F11" || (isModKey(e) && e.shiftKey && e.key === "F")) {
 				e.preventDefault();
 				void toggleFocusMode(!$focusMode);
 				return;
@@ -214,7 +221,7 @@
 				return;
 			}
 
-			if (e.ctrlKey && e.key === ",") {
+			if (isModKey(e) && e.key === ",") {
 				e.preventDefault();
 				$settingsOpen = !$settingsOpen;
 			}
@@ -290,6 +297,13 @@
 		contentEl?.addEventListener("wheel", handleWheel, { passive: false });
 		contentEl?.addEventListener("dblclick", handleDblClick);
 		window.addEventListener("beforeunload", saveState);
+
+		// Silent auto-update: download + install in background, applies on next launch
+		check().then(async (update) => {
+			if (update) {
+				await update.downloadAndInstall();
+			}
+		}).catch(() => {});
 
 		return () => {
 			unlistenDrop.then(fn => fn());
@@ -467,7 +481,21 @@
 			}
 		}
 
-		return null;
+		// Fallback for pure insertions in formatted text:
+		// find the insertion point using ctxAfter in source
+		if (!oldPart && newPart) {
+			if (ctxAfter) {
+				idx = source.indexOf(ctxAfter);
+				if (idx !== -1) {
+					return source.slice(0, idx) + newPart + source.slice(idx);
+				}
+			}
+			// Append at end if no ctxAfter
+			return source + newPart;
+		}
+
+		// Last resort: replace entire source block with new text (loses formatting)
+		return newText;
 	}
 
 	async function finishEdit() {
@@ -1029,7 +1057,7 @@
 			<button
 				class="icon-btn"
 				on:click={openFileDialog}
-				title="打开文件 (Ctrl+O)"
+				title="打开文件 ({modLabel}O)"
 			>
 				<svg
 					width="18"
@@ -1072,7 +1100,7 @@
 					class="icon-btn"
 					class:active={$tocOpen}
 					on:click={() => ($tocOpen = !$tocOpen)}
-					title="目录 (Ctrl+T)"
+					title="目录 ({modLabel}T)"
 				>
 					<svg
 						width="18"
@@ -1093,7 +1121,7 @@
 						if ($searchOpen)
 							tick().then(() => searchInput?.focus());
 					}}
-					title="搜索 (Ctrl+F)"
+					title="搜索 ({modLabel}F)"
 				>
 					<svg
 						width="18"
@@ -1112,7 +1140,7 @@
 				class="icon-btn"
 				class:active={$settingsOpen}
 				on:click={() => ($settingsOpen = !$settingsOpen)}
-				title="设置 (Ctrl+,)"
+				title="设置 ({modLabel},)"
 			>
 				<svg
 					width="18"
@@ -1273,7 +1301,7 @@
 				</div>
 				<p class="welcome-text">
 					打开一个 Markdown 文件开始阅读				</p>
-				<p class="welcome-hint">Ctrl+O 或将文件拖到此处</p>
+				<p class="welcome-hint">{modLabel}O 或将文件拖到此处</p>
 			</div>
 		{/if}
 	</main>
