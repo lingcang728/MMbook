@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -54,6 +57,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tauriScript: npx tauri
           tagName: ${{ github.ref_name }}
           releaseName: 'MMbook ${{ github.ref_name }}'
           releaseBody: 'See the assets below to download for your platform.'
