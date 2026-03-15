@@ -1,6 +1,8 @@
 ﻿<script lang="ts">
 	import { onMount, tick } from "svelte";
 	import { invoke } from "@tauri-apps/api/core";
+	import { listen } from "@tauri-apps/api/event";
+	import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 	import { open } from "@tauri-apps/plugin-dialog";
 	import {
 		renderMarkdown,
@@ -267,6 +269,22 @@
 			}
 		};
 
+		// Tauri drag-and-drop (replaces HTML5 drag-and-drop)
+		const appWindow = getCurrentWebviewWindow();
+		const unlistenDrop = appWindow.onDragDropEvent((event) => {
+			if (event.payload.type === 'drop') {
+				const mdFile = event.payload.paths.find(
+					(p: string) => p.endsWith('.md') || p.endsWith('.markdown')
+				);
+				if (mdFile) openFile(mdFile);
+			}
+		});
+
+		// macOS: file opened via Apple Event (double-click / Open With)
+		const unlistenOpenFile = listen<string>('open-file', (event) => {
+			openFile(event.payload);
+		});
+
 		window.addEventListener("keydown", handleKeydown);
 		contentEl?.addEventListener("scroll", handleScroll);
 		contentEl?.addEventListener("wheel", handleWheel, { passive: false });
@@ -274,6 +292,8 @@
 		window.addEventListener("beforeunload", saveState);
 
 		return () => {
+			unlistenDrop.then(fn => fn());
+			unlistenOpenFile.then(fn => fn());
 			window.removeEventListener("keydown", handleKeydown);
 			contentEl?.removeEventListener("scroll", handleScroll);
 			contentEl?.removeEventListener("wheel", handleWheel);
@@ -984,22 +1004,6 @@
 		searchDebounceTimer = setTimeout(() => performSearch(), 180);
 	}
 
-	function handleDrop(e: DragEvent) {
-		e.preventDefault();
-		const files = e.dataTransfer?.files;
-		if (files && files.length > 0) {
-			const file = files[0];
-			if (file.name.endsWith(".md") || file.name.endsWith(".markdown")) {
-				const path = (file as any).path;
-				if (path) openFile(path);
-			}
-		}
-	}
-
-	function handleDragOver(e: DragEvent) {
-		e.preventDefault();
-	}
-
 	let themePairs = getThemePairs();
 </script>
 
@@ -1010,8 +1014,6 @@
 	class:is-light-theme={$currentTheme.name.toLowerCase().includes('light')}
 	class:editing-in-focus={isEditingInDarkFocus}
 	role="application"
-	on:drop={handleDrop}
-	on:dragover={handleDragOver}
 >
 	<!-- Reading progress indicator -->
 	{#if $currentFilePath}

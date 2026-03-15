@@ -5,6 +5,8 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use tauri::Manager;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use tauri::{Emitter, RunEvent};
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct ReadingState {
@@ -95,6 +97,10 @@ fn encode_markdown(content: &str, encoding: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+fn is_markdown_path(path: &str) -> bool {
+    path.ends_with(".md") || path.ends_with(".markdown")
+}
+
 #[tauri::command]
 fn read_markdown_file(path: String) -> Result<ReadResult, String> {
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
@@ -128,7 +134,7 @@ fn save_reading_state(path: String, state: ReadingState) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -139,11 +145,12 @@ pub fn run() {
             save_reading_state,
         ])
         .setup(|app| {
+            // Windows: file path passed as CLI argument
             let window = app.get_webview_window("main").unwrap();
             let args: Vec<String> = std::env::args().collect();
             if args.len() > 1 {
                 let file_path = args[1].clone();
-                if file_path.ends_with(".md") || file_path.ends_with(".markdown") {
+                if is_markdown_path(&file_path) {
                     let _ = window.eval(&format!(
                         "window.__INITIAL_FILE__ = {};",
                         serde_json::to_string(&file_path).unwrap()
@@ -152,6 +159,24 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // macOS: file opened via Apple Event (double-click / Open With)
+    app.run(|_app_handle, event| {
+        match event {
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            RunEvent::Opened { urls } => {
+                for url in urls {
+                    if let Ok(path) = url.to_file_path() {
+                        let path_str = path.to_string_lossy().to_string();
+                        if is_markdown_path(&path_str) {
+                            let _ = _app_handle.emit("open-file", path_str);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
 }
