@@ -494,8 +494,8 @@
 			return source + newPart;
 		}
 
-		// Last resort: replace entire source block with new text (loses formatting)
-		return newText;
+		// Cannot apply diff safely — do not save
+		return null;
 	}
 
 	async function finishEdit() {
@@ -531,6 +531,15 @@
 		} catch (err) {
 			console.error('Failed to save:', err);
 		}
+
+		// Re-render to keep data-source-* attributes in sync
+		const scrollPos = contentEl?.scrollTop ?? 0;
+		let html = await renderMarkdown($markdownSource);
+		html = addHeadingIds(html);
+		$renderedHtml = html;
+		tocItems = extractToc(html);
+		await tick();
+		if (contentEl) contentEl.scrollTop = scrollPos;
 
 		saveState();
 	}
