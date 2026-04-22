@@ -346,18 +346,21 @@
 			saveState();
 		}
 		$isLoading = true;
-		$currentFilePath = path;
-		fileName = path.split(/[\\/]/).pop() || "";
+		const nextFileName = path.split(/[\\/]/).pop() || "";
+		let loadSucceeded = false;
 
 		try {
 			const result = await invoke<{content: string, encoding: string}>("read_markdown_file", {
 				path,
 			});
-			$markdownSource = result.content;
-			fileEncoding = result.encoding;
 
 			let html = await renderMarkdown(result.content);
 			html = addHeadingIds(html);
+
+			$currentFilePath = path;
+			fileName = nextFileName;
+			$markdownSource = result.content;
+			fileEncoding = result.encoding;
 			$renderedHtml = html;
 			tocItems = extractToc(html);
 
@@ -373,19 +376,22 @@
 				// No saved state, start from top
 			}
 
+			loadSucceeded = true;
+
 		} catch (err) {
 			console.error("Failed to open file:", err);
 		} finally {
 			$isLoading = false;
-			await tick();
-
-			refreshFocusBlocks();
-			if ($searchQuery.trim()) {
-				performSearch();
-			}
-			if ($focusMode) {
+			if (loadSucceeded) {
 				await tick();
-				enterFocusMode();
+				refreshFocusBlocks();
+				if ($searchQuery.trim()) {
+					performSearch();
+				}
+				if ($focusMode) {
+					await tick();
+					enterFocusMode();
+				}
 			}
 		}
 	}
