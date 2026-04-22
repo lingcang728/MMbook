@@ -2,10 +2,22 @@
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkRehype from 'remark-rehype';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import rehypeStringify from 'rehype-stringify';
 import { createHighlighter, type Highlighter } from 'shiki';
 
 let highlighter: Highlighter | null = null;
+const sanitizeSchema = {
+	...defaultSchema,
+	attributes: {
+		...defaultSchema.attributes,
+		code: [
+			...((defaultSchema.attributes?.code as any[]) ?? []),
+			['className', /^language-[\\w-]+$/]
+		]
+	}
+};
 
 async function getHighlighter(): Promise<Highlighter> {
 	if (!highlighter) {
@@ -55,8 +67,10 @@ export async function renderMarkdown(source: string): Promise<string> {
 		.use(remarkParse)
 		.use(remarkGfm)
 		.use(remarkRehype, { allowDangerousHtml: true })
+		.use(rehypeRaw)
+		.use(rehypeSanitize, sanitizeSchema)
 		.use(rehypeSourcePos)
-		.use(rehypeStringify, { allowDangerousHtml: true })
+		.use(rehypeStringify)
 		.process(source);
 
 	let html = String(result);
