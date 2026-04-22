@@ -91,6 +91,11 @@
 		return !!el?.closest("input, textarea, select, [contenteditable='true']");
 	}
 
+	function isMarkdownPath(path: string): boolean {
+		const lower = path.toLowerCase();
+		return lower.endsWith('.md') || lower.endsWith('.markdown');
+	}
+
 	function clearFocusScrollActive() {
 		isFocusScrollActive = false;
 		focusLockedIndex = null;
@@ -281,7 +286,7 @@
 		const unlistenDrop = appWindow.onDragDropEvent((event) => {
 			if (event.payload.type === 'drop') {
 				const mdFile = event.payload.paths.find(
-					(p: string) => p.endsWith('.md') || p.endsWith('.markdown')
+					(p: string) => isMarkdownPath(p)
 				);
 				if (mdFile) openFile(mdFile);
 			}

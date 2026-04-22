@@ -98,7 +98,8 @@ fn encode_markdown(content: &str, encoding: &str) -> Result<Vec<u8>, String> {
 }
 
 fn is_markdown_path(path: &str) -> bool {
-    path.ends_with(".md") || path.ends_with(".markdown")
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown")
 }
 
 #[tauri::command]
@@ -180,4 +181,21 @@ pub fn run() {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_markdown_path;
+
+    #[test]
+    fn markdown_extension_check_is_case_insensitive() {
+        assert!(is_markdown_path("C:\\docs\\README.MD"));
+        assert!(is_markdown_path("/tmp/notes.MarkDown"));
+    }
+
+    #[test]
+    fn non_markdown_extensions_are_rejected() {
+        assert!(!is_markdown_path("C:\\docs\\README.txt"));
+        assert!(!is_markdown_path("/tmp/readme.md.bak"));
+    }
 }
