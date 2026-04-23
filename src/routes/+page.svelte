@@ -43,6 +43,8 @@
 	let searchMatchBlocks = new Set<HTMLElement>();
 	let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let saveStateTimer: ReturnType<typeof setTimeout> | null = null;
+	let currentLoadToken: string = '';
+	let finishEditPromise: Promise<boolean> | null = null;
 	let lastFocusRenderSignature = "";
 	let spotlightHeight = 100;
 	let focusLockedIndex: number | null = null;
@@ -74,6 +76,7 @@
 	} else if (!$focusMode) {
 		particles = [];
 	}
+	$: if (!editingParagraph && isEditingInDarkFocus) cleanupEditOrbit();
 
 	let readingProgress = 0;
 	const FOCUS_ANCHOR_RATIO = 0.5;
@@ -140,8 +143,10 @@
 			enterFocusMode();
 			return;
 		}
-		exitFocusMode();
-		$focusMode = false;
+		const exited = await exitFocusMode();
+		if (exited) {
+			$focusMode = false;
+		}
 	}
 
 	onMount(() => {
@@ -173,23 +178,31 @@
 				return;
 			}
 
-			if (e.key === "Escape") {
-				if (editingParagraph) {
-					cancelEdit();
-				} else if ($searchOpen) {
-					$searchOpen = false;
-					$searchQuery = "";
-					clearSearchHighlights();
-				} else if ($tocOpen) {
-					$tocOpen = false;
-				} else if ($settingsOpen) {
-					$settingsOpen = false;
-				} else if ($focusMode) {
-					e.preventDefault();
-					void toggleFocusMode(false);
-				}
+		if (e.key === "Escape") {
+			if (editingParagraph && $focusMode) {
+				// In focus mode: save the edit, then exit focus mode
+				e.preventDefault();
+				void finishEdit().then((saved) => {
+					if (saved) void toggleFocusMode(false);
+				});
 				return;
 			}
+			if (editingParagraph) {
+				cancelEdit();
+			} else if ($searchOpen) {
+				$searchOpen = false;
+				$searchQuery = "";
+				clearSearchHighlights();
+			} else if ($tocOpen) {
+				$tocOpen = false;
+			} else if ($settingsOpen) {
+				$settingsOpen = false;
+			} else if ($focusMode) {
+				e.preventDefault();
+				void toggleFocusMode(false);
+			}
+			return;
+		}
 
 			if (isModKey(e) && e.key === "t") {
 				e.preventDefault();
@@ -243,6 +256,11 @@
 				scheduleFocusUpdate(focusLockedIndex ?? undefined);
 			}
 
+			// Update edit orbit particle position when scrolling during edit in focus mode
+			if (editingParagraph && isEditingInDarkFocus) {
+				updateEditOrbitPosition();
+			}
+
 			if ($currentFilePath && !saveStateTimer) {
 				saveStateTimer = setTimeout(() => {
 					saveStateTimer = null;
@@ -274,6 +292,13 @@
 			moveFocus(direction);
 		};
 
+		const handleContentClick = (e: MouseEvent) => {
+			if (!$focusMode || editingParagraph) return;
+			const target = e.target as HTMLElement | null;
+			if (!target || !contentEl.querySelector(".article")?.contains(target)) return;
+			focusBlockFromInteraction(target);
+		};
+
 		const handleDblClick = (e: MouseEvent) => {
 			const target = (e.target as HTMLElement)?.closest("p, h1, h2, h3, h4, h5, h6, li, blockquote");
 			if (target && contentEl.querySelector(".article")?.contains(target)) {
@@ -288,20 +313,63 @@
 				const mdFile = event.payload.paths.find(
 					(p: string) => isMarkdownPath(p)
 				);
-				if (mdFile) openFile(mdFile);
+				if (mdFile) {
+					// openFile will handle canceling any active edit
+					openFile(mdFile);
+				}
 			}
 		});
 
 		// macOS: file opened via Apple Event (double-click / Open With)
 		const unlistenOpenFile = listen<string>('open-file', (event) => {
+			// openFile will handle canceling any active edit
 			openFile(event.payload);
 		});
 
 		window.addEventListener("keydown", handleKeydown);
 		contentEl?.addEventListener("scroll", handleScroll);
 		contentEl?.addEventListener("wheel", handleWheel, { passive: false });
+		contentEl?.addEventListener("click", handleContentClick);
 		contentEl?.addEventListener("dblclick", handleDblClick);
-		window.addEventListener("beforeunload", saveState);
+		window.addEventListener("resize", updateEditOrbitPosition);
+		const handleBeforeUnload = () => {
+			if ($currentFilePath && contentEl) saveState();
+		};
+		window.addEventListener("beforeunload", handleBeforeUnload);
+
+		// Intercept window close to save active edit before exit
+		let isClosing = false;
+		const unlistenClose = appWindow.onCloseRequested((event) => {
+			if (isClosing) return;
+			event.preventDefault();
+			isClosing = true;
+			void (async () => {
+				try {
+					await appWindow.hide();
+					if (editingParagraph) {
+						// Best effort: never block app exit on save/diff/render edge cases
+						await Promise.race([
+							finishEdit(),
+							new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1200)),
+						]);
+					}
+				} catch (err) {
+					console.error("Failed to finish edit on close:", err);
+				} finally {
+					// Exit from the Rust side so the process terminates even if window APIs misbehave.
+					try {
+						await invoke("quit_app");
+					} catch (err) {
+						console.error("Failed to quit via backend:", err);
+						try {
+							await appWindow.destroy();
+						} catch {
+							await appWindow.close();
+						}
+					}
+				}
+			})();
+		});
 
 		// Silent auto-update: download + install in background, applies on next launch
 		check().then(async (update) => {
@@ -313,11 +381,14 @@
 		return () => {
 			unlistenDrop.then(fn => fn());
 			unlistenOpenFile.then(fn => fn());
+			unlistenClose.then(fn => fn());
 			window.removeEventListener("keydown", handleKeydown);
 			contentEl?.removeEventListener("scroll", handleScroll);
 			contentEl?.removeEventListener("wheel", handleWheel);
+			contentEl?.removeEventListener("click", handleContentClick);
 			contentEl?.removeEventListener("dblclick", handleDblClick);
-			window.removeEventListener("beforeunload", saveState);
+			window.removeEventListener("resize", updateEditOrbitPosition);
+			window.removeEventListener("beforeunload", handleBeforeUnload);
 			if (focusWheelResetTimer) {
 				clearTimeout(focusWheelResetTimer);
 			}
@@ -346,10 +417,20 @@
 	}
 
 	async function openFile(path: string) {
+		// Finish any active edit before switching files (saves changes)
+		if (editingParagraph) {
+			await finishEdit();
+		}
+
 		if ($currentFilePath) {
 			if (saveStateTimer) { clearTimeout(saveStateTimer); saveStateTimer = null; }
 			saveState();
 		}
+
+		// Race condition protection: invalidate previous loads
+		const loadToken = path + ':' + Date.now();
+		currentLoadToken = loadToken;
+
 		$isLoading = true;
 		const nextFileName = path.split(/[\\/]/).pop() || "";
 		let loadSucceeded = false;
@@ -358,8 +439,10 @@
 			const result = await invoke<{content: string, encoding: string}>("read_markdown_file", {
 				path,
 			});
+			if (currentLoadToken !== loadToken) return;
 
 			let html = await renderMarkdown(result.content);
+			if (currentLoadToken !== loadToken) return;
 			html = addHeadingIds(html);
 
 			$currentFilePath = path;
@@ -369,11 +452,20 @@
 			$renderedHtml = html;
 			tocItems = extractToc(html);
 
+			// Reset focus state when file changes
+			lastFocusedIdx = -1;
+			focusLockedIndex = null;
+			spotlightHeight = 100;
+			focusEdgeSpace = 0;
+			focusBlocks = [];
+			lastFocusRenderSignature = "";
+
 			await tick();
 
 			try {
 				const state: { scroll_position: number; bookmarks: number[] } =
 					await invoke("load_reading_state", { path });
+				if (currentLoadToken !== loadToken) return;
 				if (state.scroll_position > 0 && contentEl) {
 					contentEl.scrollTop = state.scroll_position;
 				}
@@ -384,17 +476,22 @@
 			loadSucceeded = true;
 
 		} catch (err) {
+			if (currentLoadToken !== loadToken) return;
 			console.error("Failed to open file:", err);
 		} finally {
-			$isLoading = false;
-			if (loadSucceeded) {
+			if (currentLoadToken === loadToken) {
+				$isLoading = false;
+			}
+			if (loadSucceeded && currentLoadToken === loadToken) {
 				await tick();
+				if (currentLoadToken !== loadToken) return;
 				refreshFocusBlocks();
 				if ($searchQuery.trim()) {
 					performSearch();
 				}
 				if ($focusMode) {
 					await tick();
+					if (currentLoadToken !== loadToken) return;
 					enterFocusMode();
 				}
 			}
@@ -402,23 +499,47 @@
 	}
 
 	function startEdit(el: HTMLElement) {
-		if (editingParagraph) cancelEdit();
+		// Ignore new edit attempts while already editing to prevent accidental data loss
+		if (editingParagraph) return;
 		if (!$currentFilePath) return;
+		// Refuse editing blocks with inline markup or nested block structure.
+		// Heuristic diff cannot safely map rendered HTML back to markdown
+		// for links, emphasis, inline code, nested lists, multi-paragraph quotes, etc.
+		// Note: descendant <p> is intentionally NOT blocked — simple paragraphs
+		// inside blockquotes are acceptable single-paragraph blocks.
+		if (el.querySelector('a, code:not(.shiki code), strong, em, img, sup, sub, del, s, mark, ins, kbd, input[type="checkbox"], ul, ol, blockquote, pre, table')) {
+			return;
+		}
 		editingParagraph = el;
 		originalText = el.innerHTML;
-		originalTextContent = el.textContent || '';
+		originalTextContent = el.innerText || '';
 		el.setAttribute("contenteditable", "true");
 		el.classList.add("editing");
 		el.focus();
 
 		el.addEventListener("blur", finishEdit, { once: true });
 		el.addEventListener("keydown", handleEditKeydown);
+		el.addEventListener("input", updateEditOrbitPosition);
+
+		if ($focusMode) {
+			focusBlockFromInteraction(el);
+		}
 
 		const isDark = !$currentTheme.name.includes('light');
 		if ($focusMode && isDark) {
-			const rect = el.getBoundingClientRect();
-			const pad = 8;
-			editOrbitContainerStyle = `left:${rect.left - pad}px;top:${rect.top - pad}px;width:${rect.width + pad * 2}px;height:${rect.height + pad * 2}px`;
+			updateEditOrbitPosition();
+		}
+	}
+
+	function updateEditOrbitPosition() {
+		if (!editingParagraph) return;
+		const el = editingParagraph;
+		const isDark = !$currentTheme.name.includes('light');
+		if (!$focusMode || !isDark) return;
+		const rect = el.getBoundingClientRect();
+		const pad = 8;
+		editOrbitContainerStyle = `left:${rect.left - pad}px;top:${rect.top - pad}px;width:${rect.width + pad * 2}px;height:${rect.height + pad * 2}px`;
+		if (editOrbitParticles.length === 0) {
 			editOrbitParticles = Array.from({length: EDIT_ORBIT_COUNT}).map((_, i) => ({
 				id: i,
 				size: Math.random() * 2 + 1,
@@ -426,15 +547,21 @@
 				opacity: Math.random() * 0.5 + 0.5,
 				stagger: i * 0.025,
 			}));
-			isEditingInDarkFocus = true;
 		}
+		isEditingInDarkFocus = true;
 	}
 
 	function handleEditKeydown(e: KeyboardEvent) {
 		if (e.key === "Escape") {
+			if ($focusMode) {
+				// In focus mode: let the window-level Escape handler save and exit
+				return;
+			}
 			e.preventDefault();
 			cancelEdit();
 		} else if (e.key === "Enter") {
+			// Shift/Ctrl/Meta+Enter inserts a line break (browser default)
+			if (e.shiftKey || e.ctrlKey || e.metaKey) return;
 			e.preventDefault();
 			finishEdit();
 		}
@@ -445,16 +572,21 @@
 		editOrbitParticles = [];
 	}
 
-	function cancelEdit() {
-		if (!editingParagraph) return;
-		const el = editingParagraph;
+	function teardownEdit(el: HTMLElement) {
 		editingParagraph = null;
 		el.removeEventListener("blur", finishEdit);
 		el.removeEventListener("keydown", handleEditKeydown);
-		el.innerHTML = originalText;
+		el.removeEventListener("input", updateEditOrbitPosition);
 		el.removeAttribute("contenteditable");
 		el.classList.remove("editing");
 		cleanupEditOrbit();
+	}
+
+	function cancelEdit() {
+		if (!editingParagraph) return;
+		const el = editingParagraph;
+		teardownEdit(el);
+		el.innerHTML = originalText;
 	}
 
 	function applyTextDiff(oldText: string, newText: string, source: string): string | null {
@@ -509,50 +641,98 @@
 		return null;
 	}
 
-	async function finishEdit() {
-		if (!editingParagraph) return;
-		const el = editingParagraph;
-		const newTextContent = el.textContent || '';
+	async function finishEdit(): Promise<boolean> {
+		if (!editingParagraph) return true;
+		if (finishEditPromise) return finishEditPromise;
 
-		editingParagraph = null;
-		el.removeEventListener("blur", finishEdit);
-		el.removeEventListener("keydown", handleEditKeydown);
-		el.removeAttribute("contenteditable");
-		el.classList.remove("editing");
-		cleanupEditOrbit();
+		finishEditPromise = (async (): Promise<boolean> => {
+			const el = editingParagraph;
+			const newTextContent = el.innerText || '';
 
-		if (newTextContent === originalTextContent) return;
-		if (!$currentFilePath) return;
+			// Capture path/encoding and original source before any mutation
+			const savePath = $currentFilePath;
+			const saveEncoding = fileEncoding;
+			const oldText = originalText;
+			const oldTextContent = originalTextContent;
+			const oldMarkdownSource = $markdownSource;
 
-		const sourceStart = parseInt(el.dataset.sourceStart || '-1');
-		const sourceEnd = parseInt(el.dataset.sourceEnd || '-1');
-		if (sourceStart < 1 || sourceEnd < 1) return;
+			if (newTextContent === oldTextContent) {
+				// No changes — just clean up
+				teardownEdit(el);
+				return true;
+			}
 
-		const lines = $markdownSource.split('\n');
-		const sourceBlock = lines.slice(sourceStart - 1, sourceEnd).join('\n');
-		const patched = applyTextDiff(originalTextContent, newTextContent, sourceBlock);
-		if (patched === null) return;
+			if (!savePath) {
+				teardownEdit(el);
+				el.innerHTML = oldText;
+				return false;
+			}
 
-		const patchedLines = patched.split('\n');
-		lines.splice(sourceStart - 1, sourceEnd - sourceStart + 1, ...patchedLines);
-		$markdownSource = lines.join('\n');
+			const sourceStart = parseInt(el.dataset.sourceStart || '-1');
+			const sourceEnd = parseInt(el.dataset.sourceEnd || '-1');
+			if (sourceStart < 1 || sourceEnd < 1) {
+				teardownEdit(el);
+				el.innerHTML = oldText;
+				return false;
+			}
+
+			const lines = oldMarkdownSource.split('\n');
+			const sourceBlock = lines.slice(sourceStart - 1, sourceEnd).join('\n');
+			const patched = applyTextDiff(oldTextContent, newTextContent, sourceBlock);
+			if (patched === null) {
+				teardownEdit(el);
+				el.innerHTML = oldText;
+				return false;
+			}
+
+			// Convert single line breaks into GFM hard breaks to preserve rendered wrapping
+			const patchedWithHardBreaks = patched.replace(/(?<!  )\n/g, '  \n');
+			const patchedLines = patchedWithHardBreaks.split('\n');
+			lines.splice(sourceStart - 1, sourceEnd - sourceStart + 1, ...patchedLines);
+			$markdownSource = lines.join('\n');
+
+			try {
+				await invoke('save_markdown_file', { path: savePath, content: $markdownSource, encoding: saveEncoding });
+			} catch (err) {
+				console.error('Failed to save:', err);
+				$markdownSource = oldMarkdownSource;
+				teardownEdit(el);
+				el.innerHTML = oldText;
+				return false;
+			}
+
+			// Success — now tear down edit state
+			teardownEdit(el);
+
+			// Re-render to keep data-source-* attributes in sync
+			const scrollPos = contentEl?.scrollTop ?? 0;
+			let html = await renderMarkdown($markdownSource);
+			html = addHeadingIds(html);
+			$renderedHtml = html;
+			tocItems = extractToc(html);
+			await tick();
+			if (contentEl) contentEl.scrollTop = scrollPos;
+
+			// Refresh focus blocks after re-render so focus mode stays in sync
+			refreshFocusBlocks();
+			if ($focusMode) {
+				scheduleFocusUpdate(lastFocusedIdx >= 0 ? lastFocusedIdx : undefined);
+			}
+
+			// Rebuild search highlights if search is active, since DOM was replaced
+			if ($searchQuery.trim()) {
+				performSearch();
+			}
+
+			saveState();
+			return true;
+		})();
 
 		try {
-			await invoke('save_markdown_file', { path: $currentFilePath, content: $markdownSource, encoding: fileEncoding });
-		} catch (err) {
-			console.error('Failed to save:', err);
+			return await finishEditPromise;
+		} finally {
+			finishEditPromise = null;
 		}
-
-		// Re-render to keep data-source-* attributes in sync
-		const scrollPos = contentEl?.scrollTop ?? 0;
-		let html = await renderMarkdown($markdownSource);
-		html = addHeadingIds(html);
-		$renderedHtml = html;
-		tocItems = extractToc(html);
-		await tick();
-		if (contentEl) contentEl.scrollTop = scrollPos;
-
-		saveState();
 	}
 
 	async function saveState() {
@@ -664,6 +844,27 @@
 		if (!block) return undefined;
 		const index = Number(block.dataset.focusIndex ?? "-1");
 		return Number.isFinite(index) && index >= 0 ? index : undefined;
+	}
+
+	function focusBlockFromInteraction(node: Node | null): boolean {
+		if (!$focusMode || !contentEl) return false;
+		const block = getBlockForNode(node);
+		if (!block) return false;
+		const index = Number(block.dataset.focusIndex ?? "-1");
+		if (!Number.isFinite(index) || index < 0) return false;
+
+		focusLockedIndex = index;
+		markFocusScrollActive();
+		updateFocusParagraph(index);
+		scrollBlockToFocusPosition(block);
+
+		requestAnimationFrame(() => {
+			updateSpotlightPosition();
+			if (editingParagraph && isEditingInDarkFocus) {
+				updateEditOrbitPosition();
+			}
+		});
+		return true;
 	}
 
 	function getFocusAnchorY() {
@@ -910,7 +1111,12 @@
 		updateSpotlightPosition();
 	}
 
-	function exitFocusMode() {
+	async function exitFocusMode(): Promise<boolean> {
+		// Finish any active edit before exiting focus mode (awaits save + re-render)
+		if (editingParagraph) {
+			const saved = await finishEdit();
+			if (!saved) return false; // Block focus mode exit if save failed
+		}
 		clearFocusStyles();
 		clearFocusScrollActive();
 		if (focusUpdateFrame !== null) {
@@ -935,6 +1141,7 @@
 		focusEdgeSpace = 0;
 		spotlightHeight = 100;
 		focusLockedIndex = null;
+		return true;
 	}
 
 	function clearSearchHighlights() {
@@ -985,17 +1192,21 @@
 		searchMatches = [];
 		for (let i = matchNodes.length - 1; i >= 0; i--) {
 			const { node, index } = matchNodes[i];
-			const range = document.createRange();
-			range.setStart(node, index);
-			range.setEnd(node, index + $searchQuery.length);
-			const mark = document.createElement("mark");
-			mark.className = "search-match";
-			range.surroundContents(mark);
-			searchMatches.unshift(mark);
-			const block = getBlockForNode(mark);
-			if (block) {
-				searchMatchBlocks.add(block);
-				block.classList.add("search-result-block");
+			try {
+				const range = document.createRange();
+				range.setStart(node, index);
+				range.setEnd(node, index + $searchQuery.length);
+				const mark = document.createElement("mark");
+				mark.className = "search-match";
+				range.surroundContents(mark);
+				searchMatches.unshift(mark);
+				const block = getBlockForNode(mark);
+				if (block) {
+					searchMatchBlocks.add(block);
+					block.classList.add("search-result-block");
+				}
+			} catch {
+				// Range crosses element boundaries — skip this match gracefully
 			}
 		}
 
@@ -1022,15 +1233,8 @@
 		if (!match) return;
 
 		match.classList.add("search-current");
-		const block = getBlockForNode(match);
-		if ($focusMode && block) {
-			const index = Number(block.dataset.focusIndex ?? "-1");
-			if (Number.isFinite(index) && index >= 0) {
-				focusLockedIndex = index;
-				markFocusScrollActive();
-				updateFocusParagraph(index);
-				scrollBlockToFocusPosition(block);
-				updateSpotlightPosition();
+		if ($focusMode) {
+			if (focusBlockFromInteraction(match)) {
 				return;
 			}
 		}

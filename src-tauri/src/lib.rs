@@ -109,10 +109,51 @@ fn read_markdown_file(path: String) -> Result<ReadResult, String> {
     Ok(ReadResult { content, encoding })
 }
 
+#[cfg(target_os = "windows")]
+extern "system" {
+    fn MoveFileExW(lpExistingFileName: *const u16, lpNewFileName: *const u16, dwFlags: u32) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+fn wide_path(path: &std::path::Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
+fn atomic_write_file(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    let temp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+    if fs::write(&temp_path, data).is_ok() {
+        #[cfg(target_os = "windows")]
+        {
+            const MOVEFILE_REPLACE_EXISTING: u32 = 1;
+            let from = wide_path(&temp_path);
+            let to = wide_path(path);
+            let ok = unsafe {
+                MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING) != 0
+            };
+            if ok {
+                return Ok(());
+            }
+            let _ = fs::remove_file(&temp_path);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if fs::rename(&temp_path, path).is_ok() {
+                return Ok(());
+            }
+            let _ = fs::remove_file(&temp_path);
+        }
+    } else {
+        let _ = fs::remove_file(&temp_path);
+    }
+    // Atomic replace unavailable (destination locked, cross-volume, etc.) — write directly.
+    fs::write(path, data).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn save_markdown_file(path: String, content: String, encoding: String) -> Result<(), String> {
     let bytes = encode_markdown(&content, &encoding)?;
-    fs::write(&path, bytes).map_err(|e| e.to_string())
+    atomic_write_file(std::path::Path::new(&path), &bytes)
 }
 
 #[tauri::command]
@@ -130,7 +171,12 @@ fn load_reading_state(path: String) -> Result<ReadingState, String> {
 fn save_reading_state(path: String, state: ReadingState) -> Result<(), String> {
     let sp = state_path_for(&path);
     let data = serde_json::to_string(&state).map_err(|e| e.to_string())?;
-    fs::write(&sp, data).map_err(|e| e.to_string())
+    atomic_write_file(&sp, data.as_bytes())
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -145,6 +191,7 @@ pub fn run() {
             save_markdown_file,
             load_reading_state,
             save_reading_state,
+            quit_app,
         ])
         .setup(|app| {
             // Windows: file path passed as CLI argument
