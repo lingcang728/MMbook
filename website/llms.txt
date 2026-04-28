@@ -16,7 +16,7 @@ MMbook is a desktop Markdown reader (not an editor) for individual developers an
 
 ## Links
 
-- Product site: https://mmbook.vercel.app/
+- Product site: https://mmbook-opal.vercel.app/
 - Source code: https://github.com/lingcang728/MMbook
 - Downloads: https://github.com/lingcang728/MMbook/releases
 - Issues / feedback: https://github.com/lingcang728/MMbook/issues
