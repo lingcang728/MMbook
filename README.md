@@ -47,7 +47,7 @@
 ### 安装与运行
 1. 克隆仓库：
    ```bash
-   git clone https://github.com/LingCang/MMbook.git
+   git clone https://github.com/lingcang728/MMbook.git
    cd MMbook
    ```
 2. 安装依赖：

@@ -30,6 +30,7 @@
 	let tocItems: TocItem[] = [];
 	let fileName = "";
 	let fileEncoding = 'utf-8';
+	let fileError = "";
 	let searchMatches: Element[] = [];
 	let currentMatchIndex = -1;
 	let editingParagraph: HTMLElement | null = null;
@@ -137,6 +138,7 @@
 
 	async function toggleFocusMode(nextState = !$focusMode) {
 		if (nextState === $focusMode) return;
+		if (nextState && !$currentFilePath) return;
 		if (nextState) {
 			$focusMode = true;
 			await tick();
@@ -419,7 +421,8 @@
 	async function openFile(path: string) {
 		// Finish any active edit before switching files (saves changes)
 		if (editingParagraph) {
-			await finishEdit();
+			const saved = await finishEdit();
+			if (!saved) return;
 		}
 
 		if ($currentFilePath) {
@@ -432,6 +435,7 @@
 		currentLoadToken = loadToken;
 
 		$isLoading = true;
+		fileError = "";
 		const nextFileName = path.split(/[\\/]/).pop() || "";
 		let loadSucceeded = false;
 
@@ -478,6 +482,7 @@
 		} catch (err) {
 			if (currentLoadToken !== loadToken) return;
 			console.error("Failed to open file:", err);
+			fileError = `无法打开文件：${err instanceof Error ? err.message : String(err)}`;
 		} finally {
 			if (currentLoadToken === loadToken) {
 				$isLoading = false;
@@ -693,8 +698,10 @@
 
 			try {
 				await invoke('save_markdown_file', { path: savePath, content: $markdownSource, encoding: saveEncoding });
+				fileError = "";
 			} catch (err) {
 				console.error('Failed to save:', err);
+				fileError = `保存失败：${err instanceof Error ? err.message : String(err)}`;
 				$markdownSource = oldMarkdownSource;
 				teardownEdit(el);
 				el.innerHTML = oldText;
@@ -1169,14 +1176,14 @@
 
 	function performSearch() {
 		clearSearchHighlights();
-		if (!$searchQuery || !contentEl) return;
+		const query = $searchQuery.trim().toLowerCase();
+		if (!query || !contentEl) return;
 
 		refreshFocusBlocks();
 		const article = contentEl.querySelector(".article");
 		if (!article) return;
 
 		const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
-		const query = $searchQuery.toLowerCase();
 		const matchNodes: { node: Text; index: number }[] = [];
 
 		while (walker.nextNode()) {
@@ -1185,7 +1192,7 @@
 			let idx = text.indexOf(query);
 			while (idx !== -1) {
 				matchNodes.push({ node, index: idx });
-				idx = text.indexOf(query, idx + 1);
+				idx = text.indexOf(query, idx + query.length);
 			}
 		}
 
@@ -1195,7 +1202,7 @@
 			try {
 				const range = document.createRange();
 				range.setStart(node, index);
-				range.setEnd(node, index + $searchQuery.length);
+				range.setEnd(node, index + query.length);
 				const mark = document.createElement("mark");
 				mark.className = "search-match";
 				range.surroundContents(mark);
@@ -1498,6 +1505,9 @@
 
 	<!-- Main content -->
 	<main class="content" bind:this={contentEl}>
+		{#if fileError}
+			<div class="file-error" role="alert">{fileError}</div>
+		{/if}
 		{#if $isLoading}
 			<div class="loading">
 				<div class="loading-dot"></div>
@@ -1505,6 +1515,10 @@
 		{:else if $renderedHtml}
 			<article class="article">
 				{@html $renderedHtml}
+			</article>
+		{:else if $currentFilePath}
+			<article class="article empty-file">
+				<p>空白 Markdown 文件</p>
 			</article>
 		{:else}
 			<div class="welcome">
@@ -1988,6 +2002,24 @@
 		position: relative;
 		z-index: 20;
 		animation: contentFadeIn 0.3s ease;
+		overflow-wrap: anywhere;
+	}
+
+	.file-error {
+		margin: 16px auto 0;
+		max-width: 760px;
+		padding: 10px 14px;
+		border: 1px solid var(--hr);
+		border-radius: 8px;
+		background: var(--bg-secondary);
+		color: var(--text-secondary);
+		font-size: 13px;
+		line-height: 1.5;
+		overflow-wrap: anywhere;
+	}
+
+	.empty-file {
+		color: var(--text-faded);
 	}
 	
 	.app.focus-mode .article {

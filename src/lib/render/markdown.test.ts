@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { renderMarkdown } from './markdown';
+import { addHeadingIds, extractToc, renderMarkdown } from './markdown';
 
 describe('renderMarkdown', () => {
 	it('sanitizes unsafe HTML payloads', async () => {
@@ -30,5 +30,32 @@ describe('renderMarkdown', () => {
 
 		expect(html).toContain('class="shiki');
 		expect(html).toContain('const');
+	});
+
+	it('preserves source position data on highlighted code blocks', async () => {
+		const html = await renderMarkdown('intro\n\n```javascript\nconst x = 1;\n```');
+
+		expect(html).toContain('class="shiki');
+		expect(html).toContain('data-source-start="3"');
+		expect(html).toContain('data-source-end="5"');
+	});
+
+	it('decodes escaped heading text for generated ids and TOC labels', async () => {
+		const html = addHeadingIds(await renderMarkdown('# Tom & Jerry'));
+		const toc = extractToc(html);
+
+		expect(html).toContain('id="tom-jerry"');
+		expect(toc).toEqual([{ level: 1, text: 'Tom & Jerry', id: 'tom-jerry' }]);
+	});
+
+	it('generates unique ids for duplicate headings', async () => {
+		const html = addHeadingIds(await renderMarkdown('## Duplicate\n\n## Duplicate\n\n## !!!'));
+		const toc = extractToc(html);
+
+		expect(toc).toEqual([
+			{ level: 2, text: 'Duplicate', id: 'duplicate' },
+			{ level: 2, text: 'Duplicate', id: 'duplicate-1' },
+			{ level: 2, text: '!!!', id: 'unnamed' }
+		]);
 	});
 });

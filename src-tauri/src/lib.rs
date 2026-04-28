@@ -102,6 +102,26 @@ fn is_markdown_path(path: &str) -> bool {
     lower.ends_with(".md") || lower.ends_with(".markdown")
 }
 
+fn initial_markdown_path(args: &[String]) -> Option<String> {
+    if args.len() <= 1 {
+        return None;
+    }
+
+    let exact = args[1].clone();
+    if is_markdown_path(&exact) {
+        return Some(exact);
+    }
+
+    // Some Windows launchers pass a path with spaces as multiple argv entries.
+    // Reconstruct the tail when it forms a real Markdown path.
+    let joined = args[1..].join(" ");
+    if is_markdown_path(&joined) && std::path::Path::new(&joined).exists() {
+        return Some(joined);
+    }
+
+    None
+}
+
 #[tauri::command]
 fn read_markdown_file(path: String) -> Result<ReadResult, String> {
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
@@ -197,14 +217,11 @@ pub fn run() {
             // Windows: file path passed as CLI argument
             let window = app.get_webview_window("main").unwrap();
             let args: Vec<String> = std::env::args().collect();
-            if args.len() > 1 {
-                let file_path = args[1].clone();
-                if is_markdown_path(&file_path) {
-                    let _ = window.eval(&format!(
-                        "window.__INITIAL_FILE__ = {};",
-                        serde_json::to_string(&file_path).unwrap()
-                    ));
-                }
+            if let Some(file_path) = initial_markdown_path(&args) {
+                let _ = window.eval(&format!(
+                    "window.__INITIAL_FILE__ = {};",
+                    serde_json::to_string(&file_path).unwrap()
+                ));
             }
             Ok(())
         })
@@ -232,7 +249,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::is_markdown_path;
+    use super::{initial_markdown_path, is_markdown_path};
 
     #[test]
     fn markdown_extension_check_is_case_insensitive() {
@@ -244,5 +261,25 @@ mod tests {
     fn non_markdown_extensions_are_rejected() {
         assert!(!is_markdown_path("C:\\docs\\README.txt"));
         assert!(!is_markdown_path("/tmp/readme.md.bak"));
+    }
+
+    #[test]
+    fn initial_markdown_path_uses_quoted_path_argument() {
+        let args = vec![
+            "mmbook.exe".to_string(),
+            "C:\\docs\\space name\\README.md".to_string(),
+        ];
+
+        assert_eq!(
+            initial_markdown_path(&args),
+            Some("C:\\docs\\space name\\README.md".to_string())
+        );
+    }
+
+    #[test]
+    fn initial_markdown_path_rejects_non_markdown_argument() {
+        let args = vec!["mmbook.exe".to_string(), "C:\\docs\\README.txt".to_string()];
+
+        assert_eq!(initial_markdown_path(&args), None);
     }
 }

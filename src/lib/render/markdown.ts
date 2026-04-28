@@ -87,8 +87,8 @@ export async function renderMarkdown(source: string): Promise<string> {
 
 	// Enhance code blocks with Shiki
 	html = html.replace(
-		/<pre[^>]*><code class="language-([\w+-]+)">([\s\S]*?)<\/code><\/pre>/g,
-		(_, lang, code) => {
+		/<pre([^>]*)><code class="language-([\w+-]+)">([\s\S]*?)<\/code><\/pre>/g,
+		(_, preAttrs, lang, code) => {
 			const decoded = code
 				.replace(/&lt;/g, '<')
 				.replace(/&gt;/g, '>')
@@ -98,12 +98,13 @@ export async function renderMarkdown(source: string): Promise<string> {
 			try {
 				const loadedLangs = hl.getLoadedLanguages();
 				const safeLang = loadedLangs.includes(lang) ? lang : 'plaintext';
-				return hl.codeToHtml(decoded, {
+				const highlighted = hl.codeToHtml(decoded, {
 					lang: safeLang,
 					themes: { light: 'github-light', dark: 'github-dark' }
 				});
+				return highlighted.replace(/^<pre\b/, `<pre${preAttrs}`);
 			} catch {
-				return `<pre><code class="language-${lang}">${escapeHtml(decoded)}</code></pre>`;
+				return `<pre${preAttrs}><code class="language-${lang}">${escapeHtml(decoded)}</code></pre>`;
 			}
 		}
 	);
@@ -115,6 +116,37 @@ export interface TocItem {
 	level: number;
 	text: string;
 	id: string;
+}
+
+function decodeHtmlEntities(text: string): string {
+	return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (full, entity) => {
+		if (entity[0] === '#') {
+			const isHex = entity[1]?.toLowerCase() === 'x';
+			const value = Number.parseInt(entity.slice(isHex ? 2 : 1), isHex ? 16 : 10);
+			if (Number.isFinite(value)) {
+				try {
+					return String.fromCodePoint(value);
+				} catch {
+					return full;
+				}
+			}
+			return full;
+		}
+
+		const namedEntities: Record<string, string> = {
+			amp: '&',
+			apos: "'",
+			gt: '>',
+			lt: '<',
+			nbsp: '\u00a0',
+			quot: '"'
+		};
+		return namedEntities[entity] ?? full;
+	});
+}
+
+function stripHeadingHtml(content: string): string {
+	return decodeHtmlEntities(content.replace(/<[^>]*>/g, ''));
 }
 
 function generateHeadingId(text: string, seenIds: Map<string, number>): string {
@@ -144,7 +176,7 @@ export function extractToc(html: string): TocItem[] {
 	const regex = /<h([1-6])[^>]*id="([^"]*)"[^>]*>([\s\S]*?)<\/h[1-6]>/g;
 	let match;
 	while ((match = regex.exec(html)) !== null) {
-		const text = match[3].replace(/<[^>]*>/g, '');
+		const text = stripHeadingHtml(match[3]);
 		items.push({
 			level: parseInt(match[1]),
 			text,
@@ -157,7 +189,7 @@ export function extractToc(html: string): TocItem[] {
 	if (items.length === 0) {
 		const regex2 = /<h([1-6])[^>]*>([\s\S]*?)<\/h[1-6]>/g;
 		while ((match = regex2.exec(html)) !== null) {
-			const text = match[2].replace(/<[^>]*>/g, '');
+			const text = stripHeadingHtml(match[2]);
 			const id = generateHeadingId(text, seenIds);
 			items.push({ level: parseInt(match[1]), text, id });
 		}
@@ -171,7 +203,7 @@ export function addHeadingIds(html: string): string {
 	return html.replace(/<h([1-6])([^>]*)>([\s\S]*?)<\/h[1-6]>/g, (full, level, attrs, content) => {
 		// Require whitespace or start-of-tag before id=, and id= must be followed by a quote
 		if (/(^|\s)id\s*=\s*["']/i.test(attrs)) return full;
-		const text = content.replace(/<[^>]*>/g, '');
+		const text = stripHeadingHtml(content);
 		const id = generateHeadingId(text, seenIds);
 		return `<h${level}${attrs} id="${id}">${content}</h${level}>`;
 	});

@@ -1,6 +1,6 @@
 [package]
 name = "mmbook"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Markdown reader that respects your content"
 authors = ["you"]
 edition = "2021"

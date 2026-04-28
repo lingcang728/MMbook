@@ -1,0 +1,34 @@
+# MMbook
+
+> An immersive Markdown reader built with Tauri 2 + Svelte 5. Focused on the reading experience itself — spotlight focus mode, paper-themed UI, and lightning-fast startup.
+
+MMbook is a desktop Markdown reader (not an editor) for individual developers and writers who want a calm, beautiful place to read .md files. It is built on Tauri 2 (Rust backend) with a Svelte 5 + TypeScript frontend, and is distributed as a small (<10MB) installer for Windows, macOS, and Linux.
+
+## What makes MMbook different
+
+- **Spotlight Focus Mode**: A three-tier opacity gradient (100% / 40% / 15%) that highlights only the paragraph you are currently reading. Inactive paragraphs gracefully dim with a 300ms transition.
+- **Three theme pairs**: 素纸 (Plain Paper), 墨石 (Ink Stone), 暮光 (Twilight) — each with light + dark variants, designed for long reading sessions.
+- **Floating global search**: macOS-style rounded search box with real-time highlight and jump-to-match.
+- **Smart TOC**: Auto-extracted from Markdown heading levels, one-click navigation in the sidebar.
+- **Inline editing**: Double-click any paragraph to edit in place; great for fixing typos without leaving the reader.
+- **Performance**: Built with Rust + Tauri for millisecond cold start and minimal memory footprint.
+- **Code highlighting**: Powered by Shiki for accurate, multi-language syntax highlighting.
+
+## Links
+
+- Product site: https://mmbook.vercel.app/
+- Source code: https://github.com/lingcang728/MMbook
+- Downloads: https://github.com/lingcang728/MMbook/releases
+- Issues / feedback: https://github.com/lingcang728/MMbook/issues
+
+## Stack
+
+- Frontend: Svelte 5 + TypeScript + Vite
+- Backend: Rust + Tauri 2.0
+- Markdown engine: unified / remark / rehype
+- Code highlighter: Shiki
+- Storage: SQLite via Tauri SQL plugin (where applicable)
+
+## Author
+
+凌苍 (LingCang) — independent developer.
