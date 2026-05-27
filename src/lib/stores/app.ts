@@ -1,4 +1,4 @@
-import { writable, derived } from 'svelte/store';
+import { writable } from 'svelte/store';
 import { themes, applyTheme, type Theme } from '$lib/theme/themes';
 
 export const currentFilePath = writable<string | null>(null);

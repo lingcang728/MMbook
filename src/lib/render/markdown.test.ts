@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { addHeadingIds, extractToc, renderMarkdown } from './markdown';
+import { addHeadingIds, extractToc, renderMarkdown, renderMarkdownDocument } from './markdown';
 
 describe('renderMarkdown', () => {
 	it('sanitizes unsafe HTML payloads', async () => {
@@ -56,6 +56,17 @@ describe('renderMarkdown', () => {
 			{ level: 2, text: 'Duplicate', id: 'duplicate' },
 			{ level: 2, text: 'Duplicate', id: 'duplicate-1' },
 			{ level: 2, text: '!!!', id: 'unnamed' }
+		]);
+	});
+
+	it('returns HTML and TOC from the single render pass', async () => {
+		const result = await renderMarkdownDocument('# Title\n\n## 子标题');
+
+		expect(result.html).toContain('id="title"');
+		expect(result.html).toContain('id="子标题"');
+		expect(result.toc).toEqual([
+			{ level: 1, text: 'Title', id: 'title' },
+			{ level: 2, text: '子标题', id: '子标题' }
 		]);
 	});
 });

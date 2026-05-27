@@ -4,13 +4,9 @@
 	import { listen } from "@tauri-apps/api/event";
 	import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 	import { open } from "@tauri-apps/plugin-dialog";
+	import { openUrl } from "@tauri-apps/plugin-opener";
 	import { check } from "@tauri-apps/plugin-updater";
-	import {
-		renderMarkdown,
-		extractToc,
-		addHeadingIds,
-		type TocItem,
-	} from "$lib/render/markdown";
+	import type { RenderedMarkdownDocument, TocItem } from "$lib/render/markdown";
 	import {
 		currentFilePath,
 		markdownSource,
@@ -31,12 +27,19 @@
 	let fileName = "";
 	let fileEncoding = 'utf-8';
 	let fileError = "";
-	let searchMatches: Element[] = [];
+	type SearchMatch = {
+		block: HTMLElement;
+		occurrence: number;
+	};
+	let searchMatches: SearchMatch[] = [];
 	let currentMatchIndex = -1;
+	let currentSearchMark: HTMLElement | null = null;
 	let editingParagraph: HTMLElement | null = null;
 	let originalText = "";
 	let originalTextContent = "";
 	let focusBlocks: HTMLElement[] = [];
+	let focusBlockMetrics: { top: number; bottom: number; center: number }[] = [];
+	let focusMetricsValid = false;
 	let focusUpdateFrame: number | null = null;
 	let queuedFocusIndex: number | undefined;
 	let isFocusScrollActive = false;
@@ -47,8 +50,18 @@
 	let currentLoadToken: string = '';
 	let finishEditPromise: Promise<boolean> | null = null;
 	let lastFocusRenderSignature = "";
+	let focusStyleCache = new WeakMap<HTMLElement, string>();
+	let lastFocusStyleIndices = new Set<number>();
+	let lastFocusStyleTheme = "";
+	let lastFocusSearchIndex = -1;
+	let markdownWorker: Worker | null = null;
+	let markdownWorkerFailed = false;
+	let nextRenderRequestId = 1;
+	const pendingMarkdownRenders = new Map<number, {
+		resolve: (result: RenderedMarkdownDocument) => void;
+		reject: (error: Error) => void;
+	}>();
 	let spotlightHeight = 100;
-	let focusLockedIndex: number | null = null;
 
 	let isEditingInDarkFocus = false;
 	let editOrbitContainerStyle = '';
@@ -56,6 +69,7 @@
 	let editOrbitParticles: {id: number, size: number, duration: number, opacity: number, stagger: number}[] = [];
 
 	let particles: {id: number, left: number, size: number, duration: number, delay: number, opacity: number}[] = [];
+	let isLightTheme = false;
 
 	const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 	const modLabel = isMac ? '⌘' : 'Ctrl+';
@@ -63,7 +77,8 @@
 		return isMac ? e.metaKey : e.ctrlKey;
 	}
 
-	$: if ($focusMode && typeof window !== "undefined") {
+	$: isLightTheme = $currentTheme.name.toLowerCase().includes('light');
+	$: if ($focusMode && !isLightTheme && typeof window !== "undefined") {
 		if (particles.length === 0) {
 			particles = Array.from({length: 80}).map((_, i) => ({
 				id: i,
@@ -74,7 +89,7 @@
 				opacity: Math.random() * 0.7 + 0.3
 			}));
 		}
-	} else if (!$focusMode) {
+	} else {
 		particles = [];
 	}
 	$: if (!editingParagraph && isEditingInDarkFocus) cleanupEditOrbit();
@@ -85,6 +100,9 @@
 	const FOCUS_EDGE_SPACE_MIN = 140;
 	const FOCUS_WHEEL_STEP = 48;
 	const FOCUS_SCROLL_ACTIVE_MS = 120;
+	const FOCUS_LONG_BLOCK_RATIO = 0.78;
+	const FOCUS_SPOTLIGHT_MAX_RATIO = 0.62;
+	const FOCUS_SPOTLIGHT_MIN = 48;
 	let focusEdgeSpace = 0;
 	let focusWheelDelta = 0;
 	let focusWheelResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -100,9 +118,125 @@
 		return lower.endsWith('.md') || lower.endsWith('.markdown');
 	}
 
+	function rejectPendingMarkdownRenders(error: Error) {
+		pendingMarkdownRenders.forEach(({ reject }) => reject(error));
+		pendingMarkdownRenders.clear();
+	}
+
+	function getMarkdownWorker() {
+		if (markdownWorkerFailed || typeof Worker === "undefined") return null;
+		if (markdownWorker) return markdownWorker;
+
+		try {
+			markdownWorker = new Worker(
+				new URL("../lib/render/markdown.worker.ts", import.meta.url),
+				{ type: "module" },
+			);
+			markdownWorker.onmessage = (
+				event: MessageEvent<
+					| { id: number; result: RenderedMarkdownDocument }
+					| { id: number; error: string }
+				>,
+			) => {
+				const pending = pendingMarkdownRenders.get(event.data.id);
+				if (!pending) return;
+				pendingMarkdownRenders.delete(event.data.id);
+				if ("result" in event.data) {
+					pending.resolve(event.data.result);
+				} else {
+					pending.reject(new Error(event.data.error));
+				}
+			};
+			markdownWorker.onerror = (event) => {
+				markdownWorkerFailed = true;
+				markdownWorker?.terminate();
+				markdownWorker = null;
+				rejectPendingMarkdownRenders(new Error(event.message || "Markdown worker failed"));
+			};
+		} catch (err) {
+			markdownWorkerFailed = true;
+			console.warn("Markdown worker unavailable.", err);
+			return null;
+		}
+
+		return markdownWorker;
+	}
+
+	async function renderMarkdownForUi(source: string): Promise<RenderedMarkdownDocument> {
+		const worker = getMarkdownWorker();
+		if (worker) {
+			try {
+				const id = nextRenderRequestId++;
+				return await new Promise<RenderedMarkdownDocument>((resolve, reject) => {
+					pendingMarkdownRenders.set(id, { resolve, reject });
+					worker.postMessage({ id, source });
+				});
+			} catch (err) {
+				markdownWorkerFailed = true;
+				markdownWorker?.terminate();
+				markdownWorker = null;
+				console.warn("Markdown worker render failed.", err);
+				throw err instanceof Error ? err : new Error(String(err));
+			}
+		}
+
+		throw new Error("Markdown worker unavailable");
+	}
+
+	function getExternalUrlToOpen(rawHref: string | null): string | null {
+		if (!rawHref || !/^[a-z][a-z0-9+.-]*:/i.test(rawHref)) return null;
+		try {
+			const url = new URL(rawHref, window.location.href);
+			if (["http:", "https:", "mailto:", "tel:"].includes(url.protocol)) {
+				return url.href;
+			}
+		} catch {
+			// Ignore malformed links and let the browser keep its default behavior.
+		}
+		return null;
+	}
+
+	function handleArticleLinkClick(event: MouseEvent, link: HTMLAnchorElement): boolean {
+		const externalUrl = getExternalUrlToOpen(link.getAttribute("href"));
+		if (!externalUrl) return false;
+
+		event.preventDefault();
+		event.stopPropagation();
+		void openUrl(externalUrl).catch((err) => {
+			console.error("Failed to open external URL:", err);
+		});
+		return true;
+	}
+
+	function runWhenIdle(callback: () => void, timeout = 5000) {
+		if ("requestIdleCallback" in window) {
+			window.requestIdleCallback(callback, { timeout });
+			return;
+		}
+		setTimeout(callback, 1200);
+	}
+
+	function scheduleUpdateCheck() {
+		const dayMs = 24 * 60 * 60 * 1000;
+		runWhenIdle(() => {
+			try {
+				const lastCheck = Number(localStorage.getItem("mmbook-last-update-check") || "0");
+				if (Number.isFinite(lastCheck) && Date.now() - lastCheck < dayMs) return;
+				localStorage.setItem("mmbook-last-update-check", String(Date.now()));
+			} catch {
+				// localStorage can be unavailable; still allow a best-effort check.
+			}
+
+			check().then(async (update) => {
+				if (update) {
+					await update.downloadAndInstall();
+				}
+			}).catch(() => {});
+		});
+	}
+
 	function clearFocusScrollActive() {
 		isFocusScrollActive = false;
-		focusLockedIndex = null;
 		if (focusScrollEndTimer) {
 			clearTimeout(focusScrollEndTimer);
 			focusScrollEndTimer = null;
@@ -110,13 +244,14 @@
 	}
 
 	function markFocusScrollActive() {
-		isFocusScrollActive = true;
+		if (!isFocusScrollActive) {
+			isFocusScrollActive = true;
+		}
 		if (focusScrollEndTimer) {
 			clearTimeout(focusScrollEndTimer);
 		}
 		focusScrollEndTimer = setTimeout(() => {
 			isFocusScrollActive = false;
-			focusLockedIndex = null;
 			focusScrollEndTimer = null;
 		}, FOCUS_SCROLL_ACTIVE_MS);
 	}
@@ -255,7 +390,7 @@
 
 			if ($focusMode) {
 				markFocusScrollActive();
-				scheduleFocusUpdate(focusLockedIndex ?? undefined);
+				scheduleFocusUpdate();
 			}
 
 			// Update edit orbit particle position when scrolling during edit in focus mode
@@ -266,7 +401,7 @@
 			if ($currentFilePath && !saveStateTimer) {
 				saveStateTimer = setTimeout(() => {
 					saveStateTimer = null;
-					saveState();
+					void saveState();
 				}, 5000);
 			}
 		};
@@ -295,9 +430,15 @@
 		};
 
 		const handleContentClick = (e: MouseEvent) => {
-			if (!$focusMode || editingParagraph) return;
 			const target = e.target as HTMLElement | null;
 			if (!target || !contentEl.querySelector(".article")?.contains(target)) return;
+
+			const link = target.closest("a[href]") as HTMLAnchorElement | null;
+			if (link && handleArticleLinkClick(e, link)) {
+				return;
+			}
+
+			if (!$focusMode || editingParagraph) return;
 			focusBlockFromInteraction(target);
 		};
 
@@ -333,9 +474,17 @@
 		contentEl?.addEventListener("wheel", handleWheel, { passive: false });
 		contentEl?.addEventListener("click", handleContentClick);
 		contentEl?.addEventListener("dblclick", handleDblClick);
-		window.addEventListener("resize", updateEditOrbitPosition);
+		const handleResize = () => {
+			invalidateFocusMetrics();
+			if ($focusMode) {
+				rebuildFocusMetrics();
+				scheduleFocusUpdate(lastFocusedIdx >= 0 ? lastFocusedIdx : undefined);
+			}
+			updateEditOrbitPosition();
+		};
+		window.addEventListener("resize", handleResize);
 		const handleBeforeUnload = () => {
-			if ($currentFilePath && contentEl) saveState();
+			if ($currentFilePath && contentEl) void flushSaveState();
 		};
 		window.addEventListener("beforeunload", handleBeforeUnload);
 
@@ -355,6 +504,10 @@
 							new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1200)),
 						]);
 					}
+					await Promise.race([
+						flushSaveState(),
+						new Promise<void>((resolve) => setTimeout(resolve, 500)),
+					]);
 				} catch (err) {
 					console.error("Failed to finish edit on close:", err);
 				} finally {
@@ -365,20 +518,17 @@
 						console.error("Failed to quit via backend:", err);
 						try {
 							await appWindow.destroy();
-						} catch {
-							await appWindow.close();
+						} catch (destroyErr) {
+							isClosing = false;
+							console.error("Failed to destroy window:", destroyErr);
 						}
 					}
 				}
 			})();
 		});
 
-		// Silent auto-update: download + install in background, applies on next launch
-		check().then(async (update) => {
-			if (update) {
-				await update.downloadAndInstall();
-			}
-		}).catch(() => {});
+		// Silent auto-update: download + install in background, applies on next launch.
+		scheduleUpdateCheck();
 
 		return () => {
 			unlistenDrop.then(fn => fn());
@@ -389,7 +539,7 @@
 			contentEl?.removeEventListener("wheel", handleWheel);
 			contentEl?.removeEventListener("click", handleContentClick);
 			contentEl?.removeEventListener("dblclick", handleDblClick);
-			window.removeEventListener("resize", updateEditOrbitPosition);
+			window.removeEventListener("resize", handleResize);
 			window.removeEventListener("beforeunload", handleBeforeUnload);
 			if (focusWheelResetTimer) {
 				clearTimeout(focusWheelResetTimer);
@@ -405,6 +555,9 @@
 				cancelAnimationFrame(focusUpdateFrame);
 				focusUpdateFrame = null;
 			}
+			markdownWorker?.terminate();
+			markdownWorker = null;
+			rejectPendingMarkdownRenders(new Error("Component destroyed"));
 		};
 	});
 
@@ -426,8 +579,7 @@
 		}
 
 		if ($currentFilePath) {
-			if (saveStateTimer) { clearTimeout(saveStateTimer); saveStateTimer = null; }
-			saveState();
+			await flushSaveState();
 		}
 
 		// Race condition protection: invalidate previous loads
@@ -445,24 +597,27 @@
 			});
 			if (currentLoadToken !== loadToken) return;
 
-			let html = await renderMarkdown(result.content);
+			const rendered = await renderMarkdownForUi(result.content);
 			if (currentLoadToken !== loadToken) return;
-			html = addHeadingIds(html);
 
 			$currentFilePath = path;
 			fileName = nextFileName;
 			$markdownSource = result.content;
 			fileEncoding = result.encoding;
-			$renderedHtml = html;
-			tocItems = extractToc(html);
+			$renderedHtml = rendered.html;
+			tocItems = rendered.toc;
 
 			// Reset focus state when file changes
 			lastFocusedIdx = -1;
-			focusLockedIndex = null;
 			spotlightHeight = 100;
 			focusEdgeSpace = 0;
 			focusBlocks = [];
+			focusStyleCache = new WeakMap<HTMLElement, string>();
+			lastFocusStyleIndices = new Set<number>();
+			lastFocusStyleTheme = "";
+			lastFocusSearchIndex = -1;
 			lastFocusRenderSignature = "";
+			invalidateFocusMetrics();
 
 			await tick();
 
@@ -490,9 +645,10 @@
 			if (loadSucceeded && currentLoadToken === loadToken) {
 				await tick();
 				if (currentLoadToken !== loadToken) return;
-				refreshFocusBlocks();
 				if ($searchQuery.trim()) {
 					performSearch();
+				} else if (!$focusMode) {
+					clearFocusBlockIndex();
 				}
 				if ($focusMode) {
 					await tick();
@@ -693,6 +849,7 @@
 			// Convert single line breaks into GFM hard breaks to preserve rendered wrapping
 			const patchedWithHardBreaks = patched.replace(/(?<!  )\n/g, '  \n');
 			const patchedLines = patchedWithHardBreaks.split('\n');
+			const originalLineCount = sourceEnd - sourceStart + 1;
 			lines.splice(sourceStart - 1, sourceEnd - sourceStart + 1, ...patchedLines);
 			$markdownSource = lines.join('\n');
 
@@ -711,27 +868,48 @@
 			// Success — now tear down edit state
 			teardownEdit(el);
 
+			const requiresFullRerender =
+				/^H[1-6]$/.test(el.tagName) ||
+				patchedLines.length !== originalLineCount;
+			if (!requiresFullRerender) {
+				invalidateFocusMetrics();
+				if ($searchQuery.trim()) {
+					performSearch();
+				} else if ($focusMode) {
+					refreshFocusBlocks();
+					scheduleFocusUpdate(lastFocusedIdx >= 0 ? lastFocusedIdx : undefined);
+				} else {
+					clearFocusBlockIndex();
+				}
+				await saveState();
+				return true;
+			}
+
 			// Re-render to keep data-source-* attributes in sync
 			const scrollPos = contentEl?.scrollTop ?? 0;
-			let html = await renderMarkdown($markdownSource);
-			html = addHeadingIds(html);
-			$renderedHtml = html;
-			tocItems = extractToc(html);
+			const rendered = await renderMarkdownForUi($markdownSource);
+			$renderedHtml = rendered.html;
+			tocItems = rendered.toc;
 			await tick();
 			if (contentEl) contentEl.scrollTop = scrollPos;
+			focusStyleCache = new WeakMap<HTMLElement, string>();
+			lastFocusStyleIndices = new Set<number>();
+			lastFocusStyleTheme = "";
+			lastFocusSearchIndex = -1;
+			lastFocusRenderSignature = "";
 
 			// Refresh focus blocks after re-render so focus mode stays in sync
-			refreshFocusBlocks();
-			if ($focusMode) {
-				scheduleFocusUpdate(lastFocusedIdx >= 0 ? lastFocusedIdx : undefined);
-			}
-
-			// Rebuild search highlights if search is active, since DOM was replaced
 			if ($searchQuery.trim()) {
+				// Rebuild search highlights if search is active, since DOM was replaced
 				performSearch();
+			} else if ($focusMode) {
+				refreshFocusBlocks();
+				scheduleFocusUpdate(lastFocusedIdx >= 0 ? lastFocusedIdx : undefined);
+			} else {
+				clearFocusBlockIndex();
 			}
 
-			saveState();
+			await saveState();
 			return true;
 		})();
 
@@ -755,6 +933,14 @@
 		} catch (e) {
 			console.error("Failed to save state:", e);
 		}
+	}
+
+	async function flushSaveState() {
+		if (saveStateTimer) {
+			clearTimeout(saveStateTimer);
+			saveStateTimer = null;
+		}
+		await saveState();
 	}
 
 	function getArticleElement() {
@@ -797,10 +983,45 @@
 		return blocks;
 	}
 
+	function invalidateFocusMetrics() {
+		focusMetricsValid = false;
+		focusBlockMetrics = [];
+	}
+
+	function rebuildFocusMetrics(blocks = focusBlocks) {
+		if (!contentEl || blocks.length === 0) {
+			focusBlockMetrics = [];
+			focusMetricsValid = true;
+			return focusBlockMetrics;
+		}
+
+		const contentRect = contentEl.getBoundingClientRect();
+		const scrollTop = contentEl.scrollTop;
+		focusBlockMetrics = blocks.map((block) => {
+			const rect = block.getBoundingClientRect();
+			const top = scrollTop + rect.top - contentRect.top;
+			const bottom = top + rect.height;
+			return {
+				top,
+				bottom,
+				center: (top + bottom) / 2,
+			};
+		});
+		focusMetricsValid = true;
+		return focusBlockMetrics;
+	}
+
+	function getFocusMetrics(blocks = focusBlocks) {
+		return focusMetricsValid && focusBlockMetrics.length === blocks.length
+			? focusBlockMetrics
+			: rebuildFocusMetrics(blocks);
+	}
+
 	function refreshFocusBlocks() {
 		const article = getArticleElement();
 		if (!article) {
 			focusBlocks = [];
+			invalidateFocusMetrics();
 			return focusBlocks;
 		}
 
@@ -814,7 +1035,13 @@
 			block.dataset.focusBlock = "true";
 			block.dataset.focusIndex = `${index}`;
 		});
+		rebuildFocusMetrics(focusBlocks);
 		return focusBlocks;
+	}
+
+	function clearFocusBlockIndex() {
+		focusBlocks = [];
+		invalidateFocusMetrics();
 	}
 
 	function getFocusBlocks() {
@@ -838,6 +1065,7 @@
 			target.style.transform = "";
 			target.style.textShadow = "";
 			target.style.color = "";
+			focusStyleCache.delete(target);
 		}
 	}
 
@@ -846,21 +1074,24 @@
 		return element?.closest("[data-focus-block='true']") as HTMLElement | null;
 	}
 
+	function getFocusIndexForBlock(block: HTMLElement | null) {
+		const index = Number(block?.dataset.focusIndex ?? "-1");
+		return Number.isFinite(index) && index >= 0 ? index : -1;
+	}
+
 	function getSearchPreferredFocusIndex() {
-		const block = currentMatchIndex >= 0 ? getBlockForNode(searchMatches[currentMatchIndex]) : null;
-		if (!block) return undefined;
-		const index = Number(block.dataset.focusIndex ?? "-1");
-		return Number.isFinite(index) && index >= 0 ? index : undefined;
+		const block = currentMatchIndex >= 0 ? searchMatches[currentMatchIndex]?.block ?? null : null;
+		const index = getFocusIndexForBlock(block);
+		return index >= 0 ? index : undefined;
 	}
 
 	function focusBlockFromInteraction(node: Node | null): boolean {
 		if (!$focusMode || !contentEl) return false;
 		const block = getBlockForNode(node);
 		if (!block) return false;
-		const index = Number(block.dataset.focusIndex ?? "-1");
-		if (!Number.isFinite(index) || index < 0) return false;
+		const index = getFocusIndexForBlock(block);
+		if (index < 0) return false;
 
-		focusLockedIndex = index;
 		markFocusScrollActive();
 		updateFocusParagraph(index);
 		scrollBlockToFocusPosition(block);
@@ -893,25 +1124,29 @@
 	}
 
 	function getClosestFocusIndex(blocks: HTMLElement[]) {
-		const anchorY = getFocusAnchorY();
-		let hitIdx = 0;
-		let bestScore = Number.POSITIVE_INFINITY;
+		if (!contentEl || blocks.length === 0) return 0;
+		const metrics = getFocusMetrics(blocks);
+		const anchorY = contentEl.scrollTop + getFocusAnchorOffset();
 
-		for (let i = 0; i < blocks.length; i++) {
-			const rect = blocks[i].getBoundingClientRect();
-			const nearestY = Math.min(Math.max(anchorY, rect.top), rect.bottom);
-			const edgeDistance = Math.abs(nearestY - anchorY);
-			const centerDistance = Math.abs((rect.top + rect.bottom) / 2 - anchorY);
-			const stabilityBias = i === lastFocusedIdx ? 24 : 0;
-			const score = edgeDistance * 1000 + centerDistance - stabilityBias;
-
-			if (score < bestScore) {
-				bestScore = score;
-				hitIdx = i;
+		let low = 0;
+		let high = metrics.length - 1;
+		while (low <= high) {
+			const mid = Math.floor((low + high) / 2);
+			const metric = metrics[mid];
+			if (anchorY < metric.top) {
+				high = mid - 1;
+			} else if (anchorY > metric.bottom) {
+				low = mid + 1;
+			} else {
+				return mid;
 			}
 		}
 
-		return hitIdx;
+		const before = clampFocusIndex(high, metrics.length);
+		const after = clampFocusIndex(low, metrics.length);
+		const beforeDistance = Math.abs(metrics[before].center - anchorY);
+		const afterDistance = Math.abs(metrics[after].center - anchorY);
+		return beforeDistance <= afterDistance ? before : after;
 	}
 
 	function clampFocusIndex(index: number, length: number) {
@@ -933,17 +1168,29 @@
 		}
 
 		focusEdgeSpace = nextFocusEdgeSpace;
+		rebuildFocusMetrics();
 	}
 
 	function scrollBlockToFocusPosition(block: HTMLElement) {
 		if (!contentEl) return;
 		const contentRect = contentEl.getBoundingClientRect();
 		const blockRect = block.getBoundingClientRect();
-		const currentBlockCenter =
-			contentEl.scrollTop +
-			(blockRect.top - contentRect.top) +
-			blockRect.height / 2;
-		const targetScrollTop = currentBlockCenter - getFocusAnchorOffset();
+		const blockTop = contentEl.scrollTop + blockRect.top - contentRect.top;
+		const blockBottom = blockTop + blockRect.height;
+		const anchorOffset = getFocusAnchorOffset();
+		const anchorScrollTop = contentEl.scrollTop + anchorOffset;
+		let targetScrollTop: number;
+
+		if (blockRect.height > contentEl.clientHeight * FOCUS_LONG_BLOCK_RATIO) {
+			if (anchorScrollTop >= blockTop && anchorScrollTop <= blockBottom) return;
+			targetScrollTop =
+				blockTop > anchorScrollTop
+					? blockTop - anchorOffset
+					: blockBottom - anchorOffset;
+		} else {
+			targetScrollTop = blockTop + blockRect.height / 2 - anchorOffset;
+		}
+
 		const maxScrollTop = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
 		contentEl.scrollTop = Math.max(0, Math.min(targetScrollTop, maxScrollTop));
 	}
@@ -959,34 +1206,76 @@
 		},
 	) {
 		const allowScale = block.tagName !== "TR";
+		const transform = allowScale ? styles.transform : "";
+		const signature = [
+			styles.filter,
+			styles.opacity,
+			transform,
+			styles.textShadow,
+			styles.color,
+		].join("|");
 		for (const target of getFocusStyleTargets(block)) {
+			if (focusStyleCache.get(target) === signature) continue;
 			target.style.filter = styles.filter;
 			target.style.opacity = styles.opacity;
-			target.style.transform = allowScale ? styles.transform : "";
+			target.style.transform = transform;
 			target.style.textShadow = styles.textShadow;
 			target.style.color = styles.color;
+			focusStyleCache.set(target, signature);
 		}
+	}
+
+	const FOCUS_STYLE_RADIUS = 6;
+
+	function getFocusStyleIndices(blocks: HTMLElement[], hitIdx: number, currentSearchIndex: number) {
+		const indices = new Set<number>();
+		const start = Math.max(0, hitIdx - FOCUS_STYLE_RADIUS);
+		const end = Math.min(blocks.length - 1, hitIdx + FOCUS_STYLE_RADIUS);
+		for (let i = start; i <= end; i++) {
+			indices.add(i);
+		}
+		if (currentSearchIndex >= 0) {
+			indices.add(currentSearchIndex);
+		}
+		return indices;
 	}
 
 	function applyFocusStyles(blocks: HTMLElement[], hitIdx: number) {
 		const currentSearchBlock = currentMatchIndex >= 0
-			? getBlockForNode(searchMatches[currentMatchIndex])
+			? searchMatches[currentMatchIndex]?.block ?? null
 			: null;
-		const signature = `${hitIdx}|${currentMatchIndex}|${searchMatchBlocks.size}`;
+		const signature = `${hitIdx}|${currentMatchIndex}|${searchMatchBlocks.size}|${$currentTheme.name}`;
 		if (signature === lastFocusRenderSignature) {
 			lastFocusedIdx = hitIdx;
 			return;
 		}
+		const previousFocusedIdx = lastFocusedIdx;
 		lastFocusRenderSignature = signature;
-		lastFocusedIdx = hitIdx;
 
 		const glowColor = getComputedStyle(document.documentElement)
 			.getPropertyValue("--focus-text-glow")
 			.trim();
 		const hasGlow = glowColor && !glowColor.includes("0, 0, 0, 0") && glowColor !== "transparent";
 
-		for (let i = 0; i < blocks.length; i++) {
+		const currentSearchIndex = getFocusIndexForBlock(currentSearchBlock);
+		const nextStyleIndices = getFocusStyleIndices(blocks, hitIdx, currentSearchIndex);
+		const forceFullStylePass =
+			lastFocusStyleIndices.size === 0 ||
+			lastFocusStyleTheme !== $currentTheme.name ||
+			previousFocusedIdx < 0;
+		const indicesToUpdate = forceFullStylePass
+			? blocks.map((_, index) => index)
+			: [
+					...new Set([
+						...lastFocusStyleIndices,
+						...nextStyleIndices,
+						lastFocusSearchIndex,
+					]),
+				].filter((index) => index >= 0);
+
+		for (const i of indicesToUpdate) {
 			const block = blocks[i];
+			if (!block) continue;
 			const dist = Math.abs(i - hitIdx);
 			const isCurrentFocus = i === hitIdx;
 			const textColor = /^H[1-6]$/.test(block.tagName) ? "var(--heading)" : "";
@@ -1041,6 +1330,11 @@
 				});
 			}
 		}
+
+		lastFocusStyleIndices = nextStyleIndices;
+		lastFocusStyleTheme = $currentTheme.name;
+		lastFocusSearchIndex = currentSearchIndex;
+		lastFocusedIdx = hitIdx;
 	}
 
 	function updateFocusParagraph(preferredIdx?: number) {
@@ -1062,7 +1356,6 @@
 
 		const baseIdx = lastFocusedIdx >= 0 ? lastFocusedIdx : getClosestFocusIndex(blocks);
 		const nextIdx = clampFocusIndex(baseIdx + direction, blocks.length);
-		focusLockedIndex = nextIdx;
 		markFocusScrollActive();
 		updateFocusParagraph(nextIdx);
 		scrollBlockToFocusPosition(blocks[nextIdx]);
@@ -1073,6 +1366,10 @@
 		for (const block of getFocusBlocks()) {
 			clearBlockFocusStyle(block);
 		}
+		focusStyleCache = new WeakMap<HTMLElement, string>();
+		lastFocusStyleIndices = new Set<number>();
+		lastFocusStyleTheme = "";
+		lastFocusSearchIndex = -1;
 		lastFocusedIdx = -1;
 		lastFocusRenderSignature = "";
 	}
@@ -1085,9 +1382,17 @@
 		const activeBlock = blocks[lastFocusedIdx];
 		const rect = activeBlock.getBoundingClientRect();
 		const anchorY = getFocusAnchorY();
-		spotlightHeight += (rect.height - spotlightHeight) * 0.24;
-		if (Math.abs(rect.height - spotlightHeight) < 0.5) {
-			spotlightHeight = rect.height;
+		const maxSpotlightHeight = Math.max(
+			FOCUS_SPOTLIGHT_MIN,
+			Math.round(contentEl.clientHeight * FOCUS_SPOTLIGHT_MAX_RATIO),
+		);
+		const targetSpotlightHeight = Math.min(
+			Math.max(rect.height, FOCUS_SPOTLIGHT_MIN),
+			maxSpotlightHeight,
+		);
+		spotlightHeight += (targetSpotlightHeight - spotlightHeight) * 0.24;
+		if (Math.abs(targetSpotlightHeight - spotlightHeight) < 0.5) {
+			spotlightHeight = targetSpotlightHeight;
 		}
 		const docStyle = document.documentElement.style;
 		docStyle.setProperty("--spotlight-top", `${anchorY - spotlightHeight / 2}px`);
@@ -1104,6 +1409,9 @@
 		focusWheelDelta = 0;
 		lastFocusedIdx = -1;
 		lastFocusRenderSignature = "";
+		lastFocusStyleIndices = new Set<number>();
+		lastFocusStyleTheme = "";
+		lastFocusSearchIndex = -1;
 		spotlightHeight = 100;
 
 		const preferredIdx = getSearchPreferredFocusIndex();
@@ -1111,7 +1419,6 @@
 		const blocks = getFocusBlocks();
 		if (blocks.length === 0 || lastFocusedIdx < 0) return;
 
-		focusLockedIndex = lastFocusedIdx;
 		markFocusScrollActive();
 		scrollBlockToFocusPosition(blocks[lastFocusedIdx]);
 		updateFocusParagraph(lastFocusedIdx);
@@ -1147,22 +1454,13 @@
 		focusWheelDelta = 0;
 		focusEdgeSpace = 0;
 		spotlightHeight = 100;
-		focusLockedIndex = null;
+		lastFocusSearchIndex = -1;
 		return true;
 	}
 
 	function clearSearchHighlights() {
 		if (searchDebounceTimer) { clearTimeout(searchDebounceTimer); searchDebounceTimer = null; }
-		if (contentEl) {
-			const marks = contentEl.querySelectorAll("mark.search-match");
-			marks.forEach((mark) => {
-				const parent = mark.parentNode;
-				if (parent) {
-					parent.replaceChild(document.createTextNode(mark.textContent || ""), mark);
-					parent.normalize();
-				}
-			});
-		}
+		clearCurrentSearchMark();
 
 		searchMatchBlocks.forEach((block) => block.classList.remove("search-result-block"));
 		searchMatchBlocks = new Set<HTMLElement>();
@@ -1174,6 +1472,68 @@
 		}
 	}
 
+	function clearCurrentSearchMark() {
+		const mark = currentSearchMark;
+		currentSearchMark = null;
+		if (!mark) return;
+		const parent = mark.parentNode;
+		if (parent) {
+			parent.replaceChild(document.createTextNode(mark.textContent || ""), mark);
+			parent.normalize();
+			invalidateFocusMetrics();
+		}
+	}
+
+	function collectMatchesInBlock(block: HTMLElement, query: string, blockMatches: SearchMatch[]) {
+		const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
+			acceptNode(node) {
+				const parent = node.parentElement;
+				if (!parent || parent.closest("script, style")) return NodeFilter.FILTER_REJECT;
+				return NodeFilter.FILTER_ACCEPT;
+			}
+		});
+		let occurrence = 0;
+		while (walker.nextNode()) {
+			const node = walker.currentNode as Text;
+			const text = node.textContent?.toLowerCase() || "";
+			let idx = text.indexOf(query);
+			while (idx !== -1) {
+				blockMatches.push({ block, occurrence });
+				occurrence += 1;
+				idx = text.indexOf(query, idx + query.length);
+			}
+		}
+		if (occurrence > 0) {
+			searchMatchBlocks.add(block);
+			block.classList.add("search-result-block");
+		}
+	}
+
+	function materializeSearchMark(match: SearchMatch, query: string) {
+		const walker = document.createTreeWalker(match.block, NodeFilter.SHOW_TEXT);
+		let occurrence = 0;
+		while (walker.nextNode()) {
+			const node = walker.currentNode as Text;
+			const text = node.textContent?.toLowerCase() || "";
+			let idx = text.indexOf(query);
+			while (idx !== -1) {
+				if (occurrence === match.occurrence) {
+					const range = document.createRange();
+					range.setStart(node, idx);
+					range.setEnd(node, idx + query.length);
+					const mark = document.createElement("mark");
+					mark.className = "search-match search-current";
+					range.surroundContents(mark);
+					currentSearchMark = mark;
+					return mark;
+				}
+				occurrence += 1;
+				idx = text.indexOf(query, idx + query.length);
+			}
+		}
+		return null;
+	}
+
 	function performSearch() {
 		clearSearchHighlights();
 		const query = $searchQuery.trim().toLowerCase();
@@ -1183,38 +1543,10 @@
 		const article = contentEl.querySelector(".article");
 		if (!article) return;
 
-		const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
-		const matchNodes: { node: Text; index: number }[] = [];
-
-		while (walker.nextNode()) {
-			const node = walker.currentNode as Text;
-			const text = node.textContent?.toLowerCase() || "";
-			let idx = text.indexOf(query);
-			while (idx !== -1) {
-				matchNodes.push({ node, index: idx });
-				idx = text.indexOf(query, idx + query.length);
-			}
-		}
-
 		searchMatches = [];
-		for (let i = matchNodes.length - 1; i >= 0; i--) {
-			const { node, index } = matchNodes[i];
-			try {
-				const range = document.createRange();
-				range.setStart(node, index);
-				range.setEnd(node, index + query.length);
-				const mark = document.createElement("mark");
-				mark.className = "search-match";
-				range.surroundContents(mark);
-				searchMatches.unshift(mark);
-				const block = getBlockForNode(mark);
-				if (block) {
-					searchMatchBlocks.add(block);
-					block.classList.add("search-result-block");
-				}
-			} catch {
-				// Range crosses element boundaries — skip this match gracefully
-			}
+		const blocks = getFocusBlocks();
+		for (const block of blocks) {
+			collectMatchesInBlock(block, query, searchMatches);
 		}
 
 		lastFocusRenderSignature = "";
@@ -1228,7 +1560,7 @@
 
 	function navigateSearch(direction: number) {
 		if (searchMatches.length === 0) return;
-		searchMatches[currentMatchIndex]?.classList.remove("search-current");
+		clearCurrentSearchMark();
 		currentMatchIndex =
 			(currentMatchIndex + direction + searchMatches.length) %
 			searchMatches.length;
@@ -1239,14 +1571,17 @@
 		const match = searchMatches[currentMatchIndex];
 		if (!match) return;
 
-		match.classList.add("search-current");
+		clearCurrentSearchMark();
+		const mark = materializeSearchMark(match, $searchQuery.trim().toLowerCase());
+		if (!mark) return;
+		invalidateFocusMetrics();
 		if ($focusMode) {
-			if (focusBlockFromInteraction(match)) {
+			if (focusBlockFromInteraction(match.block)) {
 				return;
 			}
 		}
 
-		match.scrollIntoView({ behavior: "smooth", block: "center" });
+		mark.scrollIntoView({ behavior: "smooth", block: "center" });
 	}
 
 	function scrollToHeading(id: string) {
@@ -1270,7 +1605,7 @@
 	class="app"
 	class:focus-mode={$focusMode}
 	class:focus-scroll-active={isFocusScrollActive}
-	class:is-light-theme={$currentTheme.name.toLowerCase().includes('light')}
+	class:is-light-theme={isLightTheme}
 	class:editing-in-focus={isEditingInDarkFocus}
 	role="application"
 >
@@ -1988,6 +2323,9 @@
 		overflow-x: hidden;
 		scroll-behavior: smooth;
 	}
+	.app.focus-mode .content {
+		scroll-behavior: auto;
+	}
 
 	.article {
 		--article-padding-x: 48px;
@@ -2003,6 +2341,16 @@
 		z-index: 20;
 		animation: contentFadeIn 0.3s ease;
 		overflow-wrap: anywhere;
+	}
+
+	.app:not(.focus-mode) :global(.article > *) {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 3em;
+	}
+	.app:not(.focus-mode) :global(.article pre),
+	.app:not(.focus-mode) :global(.article table),
+	.app:not(.focus-mode) :global(.article blockquote) {
+		contain-intrinsic-size: auto 12em;
 	}
 
 	.file-error {
@@ -2206,6 +2554,13 @@
 			color 0.4s ease,
 			text-shadow 0.4s ease;
 	}
+	.focus-scroll-active :global(.article > *) {
+		transition: none;
+	}
+	.focus-scroll-active :global([data-focus-block="true"] > td),
+	.focus-scroll-active :global([data-focus-block="true"] > th) {
+		transition: none;
+	}
 	.focus-mode :global(.article blockquote),
 	.focus-mode :global(.article pre) {
 		background: transparent;
@@ -2315,6 +2670,9 @@
 		transition: top 0.1s ease-out;
 		filter: blur(1px);
 	}
+	.focus-scroll-active .stage-lamp {
+		transition: none;
+	}
 	.is-light-theme .stage-lamp {
 		background: rgba(0, 0, 0, 0.4);
 		box-shadow: 0 0 20px 8px rgba(0, 0, 0, 0.15), 0 0 10px rgba(0, 0, 0, 0.2) inset;
@@ -2329,6 +2687,9 @@
 		transition: clip-path 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
 		will-change: clip-path;
 		opacity: 0.8;
+	}
+	.focus-scroll-active .stage-beam {
+		transition: none;
 	}
 	.is-light-theme .stage-beam {
 		opacity: 0.1;

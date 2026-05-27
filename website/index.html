@@ -265,9 +265,14 @@
         document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
 
         const navbar = document.querySelector('.navbar');
+        let scrollFrame = 0;
         window.addEventListener('scroll', () => {
-            navbar.classList.toggle('scrolled', window.scrollY > 40);
-        });
+            if (scrollFrame) return;
+            scrollFrame = requestAnimationFrame(() => {
+                scrollFrame = 0;
+                navbar.classList.toggle('scrolled', window.scrollY > 40);
+            });
+        }, { passive: true });
     </script>
 </body>
 

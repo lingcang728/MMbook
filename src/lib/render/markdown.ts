@@ -5,9 +5,8 @@ import remarkRehype from 'remark-rehype';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import rehypeStringify from 'rehype-stringify';
-import { createHighlighter, type Highlighter } from 'shiki';
+import type { HighlighterCore, LanguageRegistration } from 'shiki/core';
 
-let highlighter: Highlighter | null = null;
 const sanitizeSchema = {
 	...defaultSchema,
 	attributes: {
@@ -19,30 +18,104 @@ const sanitizeSchema = {
 	}
 };
 
-async function getHighlighter(): Promise<Highlighter> {
-	if (!highlighter) {
-		highlighter = await createHighlighter({
-			themes: ['github-light', 'github-dark'],
-			langs: [
-				'javascript',
-				'typescript',
-				'python',
-				'rust',
-				'html',
-				'css',
-				'json',
-				'bash',
-				'markdown',
-				'yaml',
-				'sql',
-				'go',
-				'java',
-				'c',
-				'cpp',
-				'plaintext'
-			]
-		});
+type LanguageLoader = () => Promise<{ default: LanguageRegistration[] }>;
+
+let highlighterPromise: Promise<HighlighterCore> | null = null;
+const loadedLanguages = new Set<string>();
+
+const languageLoaders: Record<string, LanguageLoader> = {
+	bash: () => import('@shikijs/langs/bash'),
+	c: () => import('@shikijs/langs/c'),
+	cpp: () => import('@shikijs/langs/cpp'),
+	css: () => import('@shikijs/langs/css'),
+	go: () => import('@shikijs/langs/go'),
+	html: () => import('@shikijs/langs/html'),
+	java: () => import('@shikijs/langs/java'),
+	javascript: () => import('@shikijs/langs/javascript'),
+	json: () => import('@shikijs/langs/json'),
+	markdown: () => import('@shikijs/langs/markdown'),
+	python: () => import('@shikijs/langs/python'),
+	rust: () => import('@shikijs/langs/rust'),
+	sql: () => import('@shikijs/langs/sql'),
+	typescript: () => import('@shikijs/langs/typescript'),
+	yaml: () => import('@shikijs/langs/yaml')
+};
+
+const languageAliases: Record<string, string> = {
+	cjs: 'javascript',
+	'c++': 'cpp',
+	js: 'javascript',
+	mjs: 'javascript',
+	md: 'markdown',
+	mts: 'typescript',
+	py: 'python',
+	rs: 'rust',
+	sh: 'bash',
+	shell: 'bash',
+	shellscript: 'bash',
+	ts: 'typescript',
+	txt: 'plaintext',
+	text: 'plaintext',
+	plain: 'plaintext',
+	yml: 'yaml'
+};
+
+function normalizeLanguage(lang: string): string {
+	const normalized = lang.trim().toLowerCase();
+	return languageAliases[normalized] ?? normalized;
+}
+
+async function getHighlighter(): Promise<HighlighterCore> {
+	if (!highlighterPromise) {
+		highlighterPromise = Promise.all([
+			import('shiki/core'),
+			import('shiki/engine/javascript'),
+			import('@shikijs/themes/github-light'),
+			import('@shikijs/themes/github-dark')
+		]).then(([core, engine, githubLight, githubDark]) =>
+			core.createHighlighterCore({
+				engine: engine.createJavaScriptRegexEngine(),
+				themes: [githubLight.default, githubDark.default],
+				langs: [],
+				langAlias: {
+					cjs: 'javascript',
+					js: 'javascript',
+					mjs: 'javascript',
+					md: 'markdown',
+					mts: 'typescript',
+					py: 'python',
+					rs: 'rust',
+					sh: 'bash',
+					shell: 'bash',
+					shellscript: 'bash',
+					ts: 'typescript',
+					yml: 'yaml'
+				}
+			})
+		);
 	}
+	return highlighterPromise;
+}
+
+async function ensureLanguages(langs: string[]) {
+	const highlighter = await getHighlighter();
+	const registrations: LanguageRegistration[][] = [];
+
+	for (const rawLang of langs) {
+		const lang = normalizeLanguage(rawLang);
+		if (lang === 'plaintext' || loadedLanguages.has(lang)) continue;
+
+		const loader = languageLoaders[lang];
+		if (!loader) continue;
+		const module = await loader();
+		registrations.push(module.default);
+		loadedLanguages.add(lang);
+	}
+
+	if (registrations.length > 0) {
+		await highlighter.loadLanguage(...registrations);
+	}
+
 	return highlighter;
 }
 
@@ -55,67 +128,15 @@ function escapeHtml(str: string): string {
 		.replace(/'/g, '&#39;');
 }
 
-function rehypeSourcePos() {
-	const blockTags = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'table', 'ul', 'ol', 'li', 'hr']);
-	function walk(node: any) {
-		if (node.type === 'element' && node.position && blockTags.has(node.tagName)) {
-			if (!node.properties) node.properties = {};
-			node.properties.dataSourceStart = node.position.start.line;
-			node.properties.dataSourceEnd = node.position.end.line;
-		}
-		if (node.children) {
-			for (const child of node.children) walk(child);
-		}
-	}
-	return (tree: any) => walk(tree);
-}
-
-export async function renderMarkdown(source: string): Promise<string> {
-	const hl = await getHighlighter();
-
-	const result = await unified()
-		.use(remarkParse)
-		.use(remarkGfm)
-		.use(remarkRehype, { allowDangerousHtml: true })
-		.use(rehypeRaw)
-		.use(rehypeSanitize, sanitizeSchema)
-		.use(rehypeSourcePos)
-		.use(rehypeStringify)
-		.process(source);
-
-	let html = String(result);
-
-	// Enhance code blocks with Shiki
-	html = html.replace(
-		/<pre([^>]*)><code class="language-([\w+-]+)">([\s\S]*?)<\/code><\/pre>/g,
-		(_, preAttrs, lang, code) => {
-			const decoded = code
-				.replace(/&lt;/g, '<')
-				.replace(/&gt;/g, '>')
-				.replace(/&amp;/g, '&')
-				.replace(/&quot;/g, '"')
-				.replace(/&#39;/g, "'");
-			try {
-				const loadedLangs = hl.getLoadedLanguages();
-				const safeLang = loadedLangs.includes(lang) ? lang : 'plaintext';
-				const highlighted = hl.codeToHtml(decoded, {
-					lang: safeLang,
-					themes: { light: 'github-light', dark: 'github-dark' }
-				});
-				return highlighted.replace(/^<pre\b/, `<pre${preAttrs}`);
-			} catch {
-				return `<pre${preAttrs}><code class="language-${lang}">${escapeHtml(decoded)}</code></pre>`;
-			}
-		}
-	);
-
-	return html;
-}
-
 export interface TocItem {
 	level: number;
 	text: string;
 	id: string;
+}
+
+export interface RenderedMarkdownDocument {
+	html: string;
+	toc: TocItem[];
 }
 
 function decodeHtmlEntities(text: string): string {
@@ -145,6 +166,13 @@ function decodeHtmlEntities(text: string): string {
 	});
 }
 
+function textFromHast(node: any): string {
+	if (!node) return '';
+	if (node.type === 'text') return node.value ?? '';
+	if (!node.children) return '';
+	return node.children.map((child: any) => textFromHast(child)).join('');
+}
+
 function stripHeadingHtml(content: string): string {
 	return decodeHtmlEntities(content.replace(/<[^>]*>/g, ''));
 }
@@ -168,6 +196,99 @@ function generateHeadingId(text: string, seenIds: Map<string, number>): string {
 		id = `${id}-${count}`;
 	}
 	return id;
+}
+
+function rehypeDocumentMetadata(toc: TocItem[]) {
+	const blockTags = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'table', 'ul', 'ol', 'li', 'hr']);
+	const seenIds = new Map<string, number>();
+
+	function walk(node: any) {
+		if (node.type === 'element') {
+			if (!node.properties) node.properties = {};
+
+			if (node.position && blockTags.has(node.tagName)) {
+				node.properties.dataSourceStart = node.position.start.line;
+				node.properties.dataSourceEnd = node.position.end.line;
+			}
+
+			const headingMatch = /^h([1-6])$/.exec(node.tagName);
+			if (headingMatch) {
+				const text = textFromHast(node);
+				if (!node.properties.id) {
+					node.properties.id = generateHeadingId(text, seenIds);
+				} else {
+					seenIds.set(String(node.properties.id), (seenIds.get(String(node.properties.id)) || 0) + 1);
+				}
+				toc.push({
+					level: Number.parseInt(headingMatch[1], 10),
+					text,
+					id: String(node.properties.id)
+				});
+			}
+		}
+		if (node.children) {
+			for (const child of node.children) walk(child);
+		}
+	}
+	return (tree: any) => walk(tree);
+}
+
+function collectCodeLanguages(html: string): string[] {
+	const langs = new Set<string>();
+	const regex = /<pre[^>]*><code class="language-([\w+-]+)">/g;
+	let match;
+	while ((match = regex.exec(html)) !== null) {
+		langs.add(match[1]);
+	}
+	return [...langs];
+}
+
+async function highlightCodeBlocks(html: string): Promise<string> {
+	const langs = collectCodeLanguages(html);
+	if (langs.length === 0) return html;
+
+	const hl = await ensureLanguages(langs);
+	return html.replace(
+		/<pre([^>]*)><code class="language-([\w+-]+)">([\s\S]*?)<\/code><\/pre>/g,
+		(_, preAttrs, lang, code) => {
+			const decoded = decodeHtmlEntities(code);
+			try {
+				const safeLang = normalizeLanguage(lang);
+				if (safeLang !== 'plaintext' && !hl.getLoadedLanguages().includes(safeLang)) {
+					return `<pre${preAttrs}><code class="language-${lang}">${escapeHtml(decoded)}</code></pre>`;
+				}
+				const highlighted = hl.codeToHtml(decoded, {
+					lang: safeLang,
+					themes: { light: 'github-light', dark: 'github-dark' }
+				});
+				return highlighted.replace(/^<pre\b/, `<pre${preAttrs}`);
+			} catch {
+				return `<pre${preAttrs}><code class="language-${lang}">${escapeHtml(decoded)}</code></pre>`;
+			}
+		}
+	);
+}
+
+export async function renderMarkdownDocument(source: string): Promise<RenderedMarkdownDocument> {
+	const toc: TocItem[] = [];
+	const result = await unified()
+		.use(remarkParse)
+		.use(remarkGfm)
+		.use(remarkRehype, { allowDangerousHtml: true })
+		.use(rehypeRaw)
+		.use(rehypeSanitize, sanitizeSchema)
+		.use(rehypeDocumentMetadata, toc)
+		.use(rehypeStringify)
+		.process(source);
+
+	return {
+		html: await highlightCodeBlocks(String(result)),
+		toc
+	};
+}
+
+export async function renderMarkdown(source: string): Promise<string> {
+	return (await renderMarkdownDocument(source)).html;
 }
 
 export function extractToc(html: string): TocItem[] {

@@ -35,9 +35,10 @@ fn state_path_for(file_path: &str) -> PathBuf {
     state_dir().join(format!("{:x}.json", hash))
 }
 
-fn decode_markdown_bytes(bytes: &[u8]) -> Result<(String, String), String> {
+fn decode_markdown_bytes(mut bytes: Vec<u8>) -> Result<(String, String), String> {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        let content = String::from_utf8(bytes[3..].to_vec()).map_err(|e| e.to_string())?;
+        bytes.drain(0..3);
+        let content = String::from_utf8(bytes).map_err(|e| e.to_string())?;
         return Ok((content, "utf-8-bom".to_string()));
     }
 
@@ -57,12 +58,14 @@ fn decode_markdown_bytes(bytes: &[u8]) -> Result<(String, String), String> {
         return Ok((text.into_owned(), "utf-16be".to_string()));
     }
 
-    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
-        return Ok((text, "utf-8".to_string()));
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok((text, "utf-8".to_string())),
+        Err(err) => {
+            let bytes = err.into_bytes();
+            let (text, _, _) = GB18030.decode(&bytes);
+            Ok((text.into_owned(), "gb18030".to_string()))
+        }
     }
-
-    let (text, _, _) = GB18030.decode(bytes);
-    Ok((text.into_owned(), "gb18030".to_string()))
 }
 
 fn encode_markdown(content: &str, encoding: &str) -> Result<Vec<u8>, String> {
@@ -125,7 +128,7 @@ fn initial_markdown_path(args: &[String]) -> Option<String> {
 #[tauri::command]
 fn read_markdown_file(path: String) -> Result<ReadResult, String> {
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-    let (content, encoding) = decode_markdown_bytes(&bytes)?;
+    let (content, encoding) = decode_markdown_bytes(bytes)?;
     Ok(ReadResult { content, encoding })
 }
 
