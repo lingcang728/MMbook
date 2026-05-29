@@ -52,11 +52,7 @@
 	let focusKeyScrollDirection: -1 | 0 | 1 = 0;
 	let focusKeyScrollFrame: number | null = null;
 	let focusKeyScrollLastTime = 0;
-	let focusKeyReadableTimer: ReturnType<typeof setTimeout> | null = null;
 	let focusInlineScrollBehavior: string | null = null;
-	let focusTapDirection: -1 | 0 | 1 = 0;
-	let focusTapTimes: number[] = [];
-	let focusRapidTapActiveUntil = 0;
 	let searchMatchBlocks = new Set<HTMLElement>();
 	let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let saveStateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -125,15 +121,7 @@
 	const FOCUS_KEY_SCROLL_RATIO = 1.26;
 	const FOCUS_KEY_SCROLL_MIN_SPEED = 780;
 	const FOCUS_KEY_SCROLL_MAX_SPEED = 1260;
-	const FOCUS_KEY_SCROLL_MAX_FRAME_MS = 50;
-	const FOCUS_KEY_HOLD_TICK_MS = 33;
-	const FOCUS_RAPID_TAP_RESET_MS = 520;
-	const FOCUS_RAPID_TAP_WINDOW_MS = 680;
-	const FOCUS_RAPID_TAP_MIN_COUNT = 3;
-	const FOCUS_RAPID_TAP_MAX_AVG_INTERVAL_MS = 240;
-	const FOCUS_RAPID_TAP_ACTIVE_MS = 420;
-	const FOCUS_RAPID_TAP_MIN_DISTANCE_MS = 80;
-	const FOCUS_RAPID_TAP_MAX_DISTANCE_MS = 260;
+	const FOCUS_KEY_SCROLL_MAX_FRAME_MS = 32;
 	let focusEdgeSpace = 0;
 	let focusWheelDelta = 0;
 	let focusWheelResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -270,7 +258,6 @@
 		isFocusScrollActive = false;
 		focusLockedIndex = null;
 		stopFocusKeyScroll({ restoreStyles: false });
-		resetFocusTapTracking();
 		clearProgrammaticFocusScrollLock();
 		if (focusScrollEndTimer) {
 			clearTimeout(focusScrollEndTimer);
@@ -348,31 +335,17 @@
 		}
 	}
 
-	function activateFocusKeyReadableMode({ hold = false }: { hold?: boolean } = {}) {
+	function activateFocusKeyReadableMode() {
 		const wasActive = isFocusKeyScrollActive;
-		if (focusKeyReadableTimer) {
-			clearTimeout(focusKeyReadableTimer);
-			focusKeyReadableTimer = null;
-		}
 		isFocusKeyScrollActive = true;
 		setFocusImmediateScrollMode(true);
 		if (!wasActive) {
 			scheduleFocusUpdate();
 		}
-		if (!hold) {
-			focusKeyReadableTimer = setTimeout(() => {
-				focusKeyReadableTimer = null;
-				deactivateFocusKeyReadableMode();
-			}, FOCUS_RAPID_TAP_ACTIVE_MS);
-		}
 	}
 
 	function deactivateFocusKeyReadableMode({ restoreStyles = true }: { restoreStyles?: boolean } = {}) {
 		const wasActive = isFocusKeyScrollActive;
-		if (focusKeyReadableTimer) {
-			clearTimeout(focusKeyReadableTimer);
-			focusKeyReadableTimer = null;
-		}
 		isFocusKeyScrollActive = false;
 		setFocusImmediateScrollMode(false);
 		if (wasActive && restoreStyles && $focusMode) {
@@ -391,7 +364,7 @@
 		clearProgrammaticFocusScrollLock();
 		focusLockedIndex = null;
 		markFocusScrollActive();
-		activateFocusKeyReadableMode({ hold: true });
+		activateFocusKeyReadableMode();
 
 		if (focusKeyScrollFrame === null) {
 			focusKeyScrollFrame = requestAnimationFrame(stepFocusKeyScroll);
@@ -416,16 +389,8 @@
 			return;
 		}
 
-		if (
-			focusKeyScrollLastTime > 0 &&
-			timestamp - focusKeyScrollLastTime < FOCUS_KEY_HOLD_TICK_MS
-		) {
-			focusKeyScrollFrame = requestAnimationFrame(stepFocusKeyScroll);
-			return;
-		}
-
 		const elapsedMs = focusKeyScrollLastTime === 0
-			? FOCUS_KEY_HOLD_TICK_MS
+			? 16
 			: Math.min(timestamp - focusKeyScrollLastTime, FOCUS_KEY_SCROLL_MAX_FRAME_MS);
 		focusKeyScrollLastTime = timestamp;
 
@@ -441,74 +406,8 @@
 
 		contentEl.scrollTop = nextScrollTop;
 		markFocusScrollActive();
-		scheduleFocusUpdate();
 
 		focusKeyScrollFrame = requestAnimationFrame(stepFocusKeyScroll);
-	}
-
-	function resetFocusTapTracking() {
-		focusTapDirection = 0;
-		focusTapTimes = [];
-		focusRapidTapActiveUntil = 0;
-	}
-
-	function getFocusRapidTapState(direction: -1 | 1, now: number) {
-		const lastTapTime = focusTapTimes[focusTapTimes.length - 1] ?? 0;
-		const sameBurst =
-			focusTapDirection === direction &&
-			lastTapTime > 0 &&
-			now - lastTapTime <= FOCUS_RAPID_TAP_RESET_MS;
-		if (!sameBurst) {
-			focusTapDirection = direction;
-			focusTapTimes = [];
-			focusRapidTapActiveUntil = 0;
-		}
-
-		const intervalMs = sameBurst ? now - lastTapTime : FOCUS_RAPID_TAP_MAX_DISTANCE_MS;
-		focusTapTimes = [...focusTapTimes, now].filter(
-			(time) => now - time <= FOCUS_RAPID_TAP_WINDOW_MS,
-		);
-
-		const averageIntervalMs =
-			focusTapTimes.length > 1
-				? (focusTapTimes[focusTapTimes.length - 1] - focusTapTimes[0]) /
-					(focusTapTimes.length - 1)
-				: Number.POSITIVE_INFINITY;
-		const startsRapidBurst =
-			focusTapTimes.length >= FOCUS_RAPID_TAP_MIN_COUNT &&
-			averageIntervalMs <= FOCUS_RAPID_TAP_MAX_AVG_INTERVAL_MS;
-		const continuesRapidBurst = now <= focusRapidTapActiveUntil;
-		const isRapid = startsRapidBurst || continuesRapidBurst;
-		if (isRapid) {
-			focusRapidTapActiveUntil = now + FOCUS_RAPID_TAP_ACTIVE_MS;
-		}
-
-		return { isRapid, intervalMs };
-	}
-
-	function scrollFocusByReadableTap(direction: -1 | 1, intervalMs: number) {
-		if (!contentEl) return;
-		clearProgrammaticFocusScrollLock();
-		focusLockedIndex = null;
-		activateFocusKeyReadableMode();
-
-		const distanceMs = Math.max(
-			FOCUS_RAPID_TAP_MIN_DISTANCE_MS,
-			Math.min(intervalMs, FOCUS_RAPID_TAP_MAX_DISTANCE_MS),
-		);
-		const maxScrollTop = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
-		const currentScrollTop = contentEl.scrollTop;
-		const delta = direction * getFocusKeyScrollSpeed() * (distanceMs / 1000);
-		const nextScrollTop = Math.max(0, Math.min(maxScrollTop, currentScrollTop + delta));
-
-		if (Math.abs(nextScrollTop - currentScrollTop) < 0.5) {
-			deactivateFocusKeyReadableMode();
-			return;
-		}
-
-		contentEl.scrollTop = nextScrollTop;
-		markFocusScrollActive();
-		scheduleFocusUpdate();
 	}
 
 	function scheduleFocusUpdate(preferredIdx?: number) {
@@ -609,37 +508,24 @@
 			}
 
 			if ($focusMode && !e.ctrlKey && !e.metaKey && !e.altKey && !isTextInputTarget(e.target)) {
-				// Arrow key strategy: deliberate taps move block-by-block, rapid same-direction
-				// taps scan at a readable speed, and OS key repeat scans at a fixed tick rate.
+				// Short taps move block-by-block; OS key repeat scrolls continuously.
 				if (e.key === "ArrowUp") {
 					e.preventDefault();
 					if (e.repeat) {
-						resetFocusTapTracking();
 						startFocusKeyScroll(-1);
 					} else {
-						const tapState = getFocusRapidTapState(-1, performance.now());
-						if (tapState.isRapid) {
-							scrollFocusByReadableTap(-1, tapState.intervalMs);
-						} else {
-							stopFocusKeyScroll();
-							moveFocus(-1);
-						}
+						stopFocusKeyScroll();
+						moveFocus(-1);
 					}
 					return;
 				}
 				if (e.key === "ArrowDown") {
 					e.preventDefault();
 					if (e.repeat) {
-						resetFocusTapTracking();
 						startFocusKeyScroll(1);
 					} else {
-						const tapState = getFocusRapidTapState(1, performance.now());
-						if (tapState.isRapid) {
-							scrollFocusByReadableTap(1, tapState.intervalMs);
-						} else {
-							stopFocusKeyScroll();
-							moveFocus(1);
-						}
+						stopFocusKeyScroll();
+						moveFocus(1);
 					}
 					return;
 				}
@@ -930,7 +816,6 @@
 
 			// Reset focus state when file changes
 			stopFocusKeyScroll({ restoreStyles: false });
-			resetFocusTapTracking();
 			lastFocusedIdx = -1;
 			focusLockedIndex = null;
 			spotlightHeight = 100;
@@ -1868,7 +1753,6 @@
 		focusEdgeSpace = 0;
 		spotlightHeight = 100;
 		focusLockedIndex = null;
-		resetFocusTapTracking();
 		clearProgrammaticFocusScrollLock();
 		lastSpotlightVars = new Map<string, string>();
 		lastFocusSearchIndex = -1;
@@ -2977,7 +2861,6 @@
 	.focus-key-scroll-active :global([data-focus-block="true"] > th) {
 		transition: none;
 	}
-	.focus-mode :global(.article blockquote),
 	.focus-mode :global(.article pre) {
 		background: transparent;
 		border-color: transparent;
