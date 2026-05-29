@@ -6,6 +6,7 @@
 	import { open } from "@tauri-apps/plugin-dialog";
 	import { openUrl } from "@tauri-apps/plugin-opener";
 	import { check } from "@tauri-apps/plugin-updater";
+	import { getFocusScrollTarget } from "$lib/focus/scroll";
 	import type { RenderedMarkdownDocument, TocItem } from "$lib/render/markdown";
 	import {
 		currentFilePath,
@@ -1437,19 +1438,16 @@
 		const blockRect = block.getBoundingClientRect();
 		const blockTop = contentEl.scrollTop + blockRect.top - contentRect.top;
 		const blockBottom = blockTop + blockRect.height;
-		const anchorOffset = getFocusAnchorOffset();
-		const anchorScrollTop = contentEl.scrollTop + anchorOffset;
-		let targetScrollTop: number;
-
-		if (blockRect.height > contentEl.clientHeight * FOCUS_LONG_BLOCK_RATIO) {
-			if (anchorScrollTop >= blockTop && anchorScrollTop <= blockBottom) return;
-			targetScrollTop =
-				blockTop > anchorScrollTop
-					? blockTop - anchorOffset
-					: blockBottom - anchorOffset;
-		} else {
-			targetScrollTop = blockTop + blockRect.height / 2 - anchorOffset;
-		}
+		const targetScrollTop = getFocusScrollTarget({
+			viewportHeight: contentEl.clientHeight,
+			currentScrollTop: contentEl.scrollTop,
+			blockTop,
+			blockBottom,
+			anchorOffset: getFocusAnchorOffset(),
+			longBlockRatio: FOCUS_LONG_BLOCK_RATIO,
+			longBlockEdgeBuffer: getLongFocusBlockEdgeBuffer(),
+		});
+		if (targetScrollTop === null) return;
 
 		const maxScrollTop = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
 		const nextScrollTop = Math.max(0, Math.min(targetScrollTop, maxScrollTop));
