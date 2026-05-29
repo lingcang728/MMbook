@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
 	import { onMount, tick } from "svelte";
 	import { invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
@@ -43,7 +43,15 @@
 	let focusUpdateFrame: number | null = null;
 	let queuedFocusIndex: number | undefined;
 	let isFocusScrollActive = false;
+	let isFocusKeyScrollActive = false;
 	let focusScrollEndTimer: ReturnType<typeof setTimeout> | null = null;
+	let focusLockedIndex: number | null = null;
+	let focusProgrammaticScrollIndex: number | null = null;
+	let focusProgrammaticScrollTarget: number | null = null;
+	let focusProgrammaticScrollTimer: ReturnType<typeof setTimeout> | null = null;
+	let focusKeyScrollDirection: -1 | 0 | 1 = 0;
+	let focusKeyScrollFrame: number | null = null;
+	let focusKeyScrollLastTime = 0;
 	let searchMatchBlocks = new Set<HTMLElement>();
 	let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let saveStateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -54,6 +62,8 @@
 	let lastFocusStyleIndices = new Set<number>();
 	let lastFocusStyleTheme = "";
 	let lastFocusSearchIndex = -1;
+	let lastFocusStyleKeyScrollActive = false;
+	let lastSpotlightVars = new Map<string, string>();
 	let markdownWorker: Worker | null = null;
 	let markdownWorkerFailed = false;
 	let nextRenderRequestId = 1;
@@ -101,8 +111,16 @@
 	const FOCUS_WHEEL_STEP = 48;
 	const FOCUS_SCROLL_ACTIVE_MS = 120;
 	const FOCUS_LONG_BLOCK_RATIO = 0.78;
+	const FOCUS_LONG_BLOCK_EDGE_RATIO = 0.12;
+	const FOCUS_LONG_BLOCK_EDGE_MIN = 48;
+	const FOCUS_LONG_BLOCK_EDGE_MAX = 140;
 	const FOCUS_SPOTLIGHT_MAX_RATIO = 0.62;
 	const FOCUS_SPOTLIGHT_MIN = 48;
+	const FOCUS_PROGRAMMATIC_SCROLL_SETTLE_MS = 180;
+	const FOCUS_KEY_SCROLL_RATIO = 0.42;
+	const FOCUS_KEY_SCROLL_MIN_SPEED = 260;
+	const FOCUS_KEY_SCROLL_MAX_SPEED = 420;
+	const FOCUS_KEY_SCROLL_MAX_FRAME_MS = 50;
 	let focusEdgeSpace = 0;
 	let focusWheelDelta = 0;
 	let focusWheelResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -176,11 +194,11 @@
 				markdownWorker?.terminate();
 				markdownWorker = null;
 				console.warn("Markdown worker render failed.", err);
-				throw err instanceof Error ? err : new Error(String(err));
 			}
 		}
 
-		throw new Error("Markdown worker unavailable");
+		const { renderMarkdownDocument } = await import("$lib/render/markdown");
+		return renderMarkdownDocument(source);
 	}
 
 	function getExternalUrlToOpen(rawHref: string | null): string | null {
@@ -237,6 +255,9 @@
 
 	function clearFocusScrollActive() {
 		isFocusScrollActive = false;
+		focusLockedIndex = null;
+		stopFocusKeyScroll({ restoreStyles: false });
+		clearProgrammaticFocusScrollLock();
 		if (focusScrollEndTimer) {
 			clearTimeout(focusScrollEndTimer);
 			focusScrollEndTimer = null;
@@ -252,8 +273,115 @@
 		}
 		focusScrollEndTimer = setTimeout(() => {
 			isFocusScrollActive = false;
+			focusLockedIndex = null;
 			focusScrollEndTimer = null;
 		}, FOCUS_SCROLL_ACTIVE_MS);
+	}
+
+	function clearProgrammaticFocusScrollLock() {
+		if (focusProgrammaticScrollTimer) {
+			clearTimeout(focusProgrammaticScrollTimer);
+			focusProgrammaticScrollTimer = null;
+		}
+		focusProgrammaticScrollIndex = null;
+		focusProgrammaticScrollTarget = null;
+	}
+
+	function scheduleProgrammaticFocusScrollUnlock(delay = FOCUS_PROGRAMMATIC_SCROLL_SETTLE_MS) {
+		if (focusProgrammaticScrollTimer) {
+			clearTimeout(focusProgrammaticScrollTimer);
+		}
+		focusProgrammaticScrollTimer = setTimeout(() => {
+			focusProgrammaticScrollTimer = null;
+			focusProgrammaticScrollIndex = null;
+			focusProgrammaticScrollTarget = null;
+		}, delay);
+	}
+
+	function lockProgrammaticFocusScroll(index: number, targetScrollTop: number) {
+		if (index < 0) return;
+		focusProgrammaticScrollIndex = index;
+		focusProgrammaticScrollTarget = targetScrollTop;
+		focusLockedIndex = index;
+		scheduleProgrammaticFocusScrollUnlock();
+	}
+
+	function getScheduledFocusIndex() {
+		return focusProgrammaticScrollIndex ?? focusLockedIndex ?? undefined;
+	}
+
+	function getFocusKeyScrollSpeed() {
+		if (!contentEl) return FOCUS_KEY_SCROLL_MIN_SPEED;
+		return Math.max(
+			FOCUS_KEY_SCROLL_MIN_SPEED,
+			Math.min(FOCUS_KEY_SCROLL_MAX_SPEED, contentEl.clientHeight * FOCUS_KEY_SCROLL_RATIO),
+		);
+	}
+
+	function startFocusKeyScroll(direction: -1 | 1) {
+		if (!contentEl || !$focusMode) return;
+
+		if (focusKeyScrollDirection !== direction) {
+			focusKeyScrollDirection = direction;
+			focusKeyScrollLastTime = 0;
+		}
+
+		clearProgrammaticFocusScrollLock();
+		focusLockedIndex = null;
+		markFocusScrollActive();
+
+		if (!isFocusKeyScrollActive) {
+			isFocusKeyScrollActive = true;
+			scheduleFocusUpdate();
+		}
+
+		if (focusKeyScrollFrame === null) {
+			focusKeyScrollFrame = requestAnimationFrame(stepFocusKeyScroll);
+		}
+	}
+
+	function stopFocusKeyScroll({ restoreStyles = true }: { restoreStyles?: boolean } = {}) {
+		const wasActive = isFocusKeyScrollActive;
+		if (focusKeyScrollFrame !== null) {
+			cancelAnimationFrame(focusKeyScrollFrame);
+			focusKeyScrollFrame = null;
+		}
+		focusKeyScrollDirection = 0;
+		focusKeyScrollLastTime = 0;
+		isFocusKeyScrollActive = false;
+
+		if (wasActive && restoreStyles && $focusMode) {
+			scheduleFocusUpdate();
+		}
+	}
+
+	function stepFocusKeyScroll(timestamp: number) {
+		focusKeyScrollFrame = null;
+		if (!contentEl || !$focusMode || focusKeyScrollDirection === 0) {
+			stopFocusKeyScroll();
+			return;
+		}
+
+		const elapsedMs = focusKeyScrollLastTime === 0
+			? 16
+			: Math.min(timestamp - focusKeyScrollLastTime, FOCUS_KEY_SCROLL_MAX_FRAME_MS);
+		focusKeyScrollLastTime = timestamp;
+
+		const maxScrollTop = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
+		const currentScrollTop = contentEl.scrollTop;
+		const delta = focusKeyScrollDirection * getFocusKeyScrollSpeed() * (elapsedMs / 1000);
+		const nextScrollTop = Math.max(0, Math.min(maxScrollTop, currentScrollTop + delta));
+
+		if (Math.abs(nextScrollTop - currentScrollTop) < 0.5) {
+			stopFocusKeyScroll();
+			return;
+		}
+
+		contentEl.scrollTop = nextScrollTop;
+		markFocusScrollActive();
+		scheduleFocusUpdate();
+
+		focusKeyScrollFrame = requestAnimationFrame(stepFocusKeyScroll);
 	}
 
 	function scheduleFocusUpdate(preferredIdx?: number) {
@@ -354,12 +482,32 @@
 			}
 
 			if ($focusMode && !e.ctrlKey && !e.metaKey && !e.altKey && !isTextInputTarget(e.target)) {
-				if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+				if (e.key === "ArrowUp") {
+					e.preventDefault();
+					if (e.repeat) {
+						startFocusKeyScroll(-1);
+					} else {
+						stopFocusKeyScroll({ restoreStyles: false });
+						moveFocus(-1);
+					}
+					return;
+				}
+				if (e.key === "ArrowDown") {
+					e.preventDefault();
+					if (e.repeat) {
+						startFocusKeyScroll(1);
+					} else {
+						stopFocusKeyScroll({ restoreStyles: false });
+						moveFocus(1);
+					}
+					return;
+				}
+				if (e.key === "ArrowLeft") {
 					e.preventDefault();
 					moveFocus(-1);
 					return;
 				}
-				if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+				if (e.key === "ArrowRight") {
 					e.preventDefault();
 					moveFocus(1);
 					return;
@@ -382,6 +530,16 @@
 			}
 		};
 
+		const handleKeyup = (e: KeyboardEvent) => {
+			if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+				stopFocusKeyScroll();
+			}
+		};
+
+		const handleWindowBlur = () => {
+			stopFocusKeyScroll();
+		};
+
 		const handleScroll = () => {
 			if (!contentEl) return;
 			const scrollTop = contentEl.scrollTop;
@@ -390,7 +548,15 @@
 
 			if ($focusMode) {
 				markFocusScrollActive();
-				scheduleFocusUpdate();
+				if (focusProgrammaticScrollIndex !== null) {
+					const targetReached =
+						focusProgrammaticScrollTarget !== null &&
+						Math.abs(scrollTop - focusProgrammaticScrollTarget) < 1;
+					scheduleProgrammaticFocusScrollUnlock(
+						targetReached ? FOCUS_SCROLL_ACTIVE_MS : FOCUS_PROGRAMMATIC_SCROLL_SETTLE_MS,
+					);
+				}
+				scheduleFocusUpdate(getScheduledFocusIndex());
 			}
 
 			// Update edit orbit particle position when scrolling during edit in focus mode
@@ -411,6 +577,16 @@
 			const blocks = getFocusBlocks();
 			if (blocks.length === 0 || Math.abs(e.deltaY) < 0.01) return;
 
+			const direction = e.deltaY > 0 ? 1 : -1;
+			if (allowNativeLongBlockWheel(blocks, direction)) {
+				focusWheelDelta = 0;
+				if (focusWheelResetTimer) {
+					clearTimeout(focusWheelResetTimer);
+					focusWheelResetTimer = null;
+				}
+				return;
+			}
+
 			e.preventDefault();
 			focusWheelDelta += e.deltaY;
 
@@ -424,9 +600,9 @@
 
 			if (Math.abs(focusWheelDelta) < FOCUS_WHEEL_STEP) return;
 
-			const direction = focusWheelDelta > 0 ? 1 : -1;
+			const stepDirection = focusWheelDelta > 0 ? 1 : -1;
 			focusWheelDelta = 0;
-			moveFocus(direction);
+			moveFocus(stepDirection);
 		};
 
 		const handleContentClick = (e: MouseEvent) => {
@@ -470,6 +646,8 @@
 		});
 
 		window.addEventListener("keydown", handleKeydown);
+		window.addEventListener("keyup", handleKeyup);
+		window.addEventListener("blur", handleWindowBlur);
 		contentEl?.addEventListener("scroll", handleScroll);
 		contentEl?.addEventListener("wheel", handleWheel, { passive: false });
 		contentEl?.addEventListener("click", handleContentClick);
@@ -535,6 +713,8 @@
 			unlistenOpenFile.then(fn => fn());
 			unlistenClose.then(fn => fn());
 			window.removeEventListener("keydown", handleKeydown);
+			window.removeEventListener("keyup", handleKeyup);
+			window.removeEventListener("blur", handleWindowBlur);
 			contentEl?.removeEventListener("scroll", handleScroll);
 			contentEl?.removeEventListener("wheel", handleWheel);
 			contentEl?.removeEventListener("click", handleContentClick);
@@ -608,7 +788,9 @@
 			tocItems = rendered.toc;
 
 			// Reset focus state when file changes
+			stopFocusKeyScroll({ restoreStyles: false });
 			lastFocusedIdx = -1;
+			focusLockedIndex = null;
 			spotlightHeight = 100;
 			focusEdgeSpace = 0;
 			focusBlocks = [];
@@ -616,7 +798,10 @@
 			lastFocusStyleIndices = new Set<number>();
 			lastFocusStyleTheme = "";
 			lastFocusSearchIndex = -1;
+			lastFocusStyleKeyScrollActive = false;
 			lastFocusRenderSignature = "";
+			lastSpotlightVars = new Map<string, string>();
+			clearProgrammaticFocusScrollLock();
 			invalidateFocusMetrics();
 
 			await tick();
@@ -1092,9 +1277,10 @@
 		const index = getFocusIndexForBlock(block);
 		if (index < 0) return false;
 
+		focusLockedIndex = index;
 		markFocusScrollActive();
 		updateFocusParagraph(index);
-		scrollBlockToFocusPosition(block);
+		scrollBlockToFocusPosition(block, index);
 
 		requestAnimationFrame(() => {
 			updateSpotlightPosition();
@@ -1153,6 +1339,53 @@
 		return Math.max(0, Math.min(index, length - 1));
 	}
 
+	function getLongFocusBlockEdgeBuffer() {
+		if (!contentEl) return FOCUS_LONG_BLOCK_EDGE_MIN;
+		return Math.max(
+			FOCUS_LONG_BLOCK_EDGE_MIN,
+			Math.min(
+				FOCUS_LONG_BLOCK_EDGE_MAX,
+				Math.round(contentEl.clientHeight * FOCUS_LONG_BLOCK_EDGE_RATIO),
+			),
+		);
+	}
+
+	function getCurrentFocusIndexForWheel(blocks: HTMLElement[]) {
+		const lockedIndex = focusProgrammaticScrollIndex ?? focusLockedIndex;
+		if (lockedIndex !== null) {
+			return clampFocusIndex(lockedIndex, blocks.length);
+		}
+		return lastFocusedIdx >= 0
+			? clampFocusIndex(lastFocusedIdx, blocks.length)
+			: getClosestFocusIndex(blocks);
+	}
+
+	function allowNativeLongBlockWheel(blocks: HTMLElement[], direction: number) {
+		if (!contentEl || blocks.length === 0) return false;
+		const currentIdx = getCurrentFocusIndexForWheel(blocks);
+		const metric = getFocusMetrics(blocks)[currentIdx];
+		const block = blocks[currentIdx];
+		if (!metric || !block) return false;
+
+		const blockHeight = metric.bottom - metric.top;
+		if (blockHeight <= contentEl.clientHeight * FOCUS_LONG_BLOCK_RATIO) return false;
+
+		const anchorY = contentEl.scrollTop + getFocusAnchorOffset();
+		const edgeBuffer = getLongFocusBlockEdgeBuffer();
+		const canScrollInsideBlock =
+			direction > 0
+				? anchorY < metric.bottom - edgeBuffer
+				: anchorY > metric.top + edgeBuffer;
+
+		if (!canScrollInsideBlock) return false;
+
+		clearProgrammaticFocusScrollLock();
+		focusLockedIndex = currentIdx;
+		markFocusScrollActive();
+		scheduleFocusUpdate(currentIdx);
+		return true;
+	}
+
 	function applyFocusSpacing({ preservePosition }: { preservePosition: boolean }) {
 		if (!contentEl) return;
 		const article = getArticleElement();
@@ -1171,7 +1404,7 @@
 		rebuildFocusMetrics();
 	}
 
-	function scrollBlockToFocusPosition(block: HTMLElement) {
+	function scrollBlockToFocusPosition(block: HTMLElement, focusIndex = getFocusIndexForBlock(block)) {
 		if (!contentEl) return;
 		const contentRect = contentEl.getBoundingClientRect();
 		const blockRect = block.getBoundingClientRect();
@@ -1192,7 +1425,9 @@
 		}
 
 		const maxScrollTop = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
-		contentEl.scrollTop = Math.max(0, Math.min(targetScrollTop, maxScrollTop));
+		const nextScrollTop = Math.max(0, Math.min(targetScrollTop, maxScrollTop));
+		lockProgrammaticFocusScroll(focusIndex, nextScrollTop);
+		contentEl.scrollTo({ top: nextScrollTop, behavior: "smooth" });
 	}
 
 	function applyStylesToBlock(
@@ -1244,7 +1479,7 @@
 		const currentSearchBlock = currentMatchIndex >= 0
 			? searchMatches[currentMatchIndex]?.block ?? null
 			: null;
-		const signature = `${hitIdx}|${currentMatchIndex}|${searchMatchBlocks.size}|${$currentTheme.name}`;
+		const signature = `${hitIdx}|${currentMatchIndex}|${searchMatchBlocks.size}|${$currentTheme.name}|${isFocusKeyScrollActive}`;
 		if (signature === lastFocusRenderSignature) {
 			lastFocusedIdx = hitIdx;
 			return;
@@ -1262,6 +1497,7 @@
 		const forceFullStylePass =
 			lastFocusStyleIndices.size === 0 ||
 			lastFocusStyleTheme !== $currentTheme.name ||
+			lastFocusStyleKeyScrollActive !== isFocusKeyScrollActive ||
 			previousFocusedIdx < 0;
 		const indicesToUpdate = forceFullStylePass
 			? blocks.map((_, index) => index)
@@ -1294,33 +1530,55 @@
 				continue;
 			}
 
-			if (dist === 1) {
+			if (isFocusKeyScrollActive) {
+				const blur = dist === 1
+					? 0.3
+					: dist === 2
+						? 0.6
+						: dist === 3
+							? 0.9
+							: Math.min(1.2 + (dist - 3) * 0.25, 2.8);
+				const opacity = dist === 1
+					? 0.86
+					: dist === 2
+						? 0.74
+						: dist === 3
+							? 0.62
+							: Math.max(0.32, 0.54 - (dist - 3) * 0.035);
 				applyStylesToBlock(block, {
-					filter: "blur(1.2px)",
-					opacity: "0.3",
+					filter: `blur(${blur}px)`,
+					opacity: `${opacity}`,
+					transform: "none",
+					textShadow: "none",
+					color: "",
+				});
+			} else if (dist === 1) {
+				applyStylesToBlock(block, {
+					filter: "blur(2.5px)",
+					opacity: "0.2",
 					transform: "scale(0.995)",
 					textShadow: "none",
 					color: "",
 				});
 			} else if (dist === 2) {
 				applyStylesToBlock(block, {
-					filter: "blur(2.8px)",
-					opacity: "0.15",
+					filter: "blur(5px)",
+					opacity: "0.08",
 					transform: "scale(0.99)",
 					textShadow: "none",
 					color: "",
 				});
 			} else if (dist === 3) {
 				applyStylesToBlock(block, {
-					filter: "blur(4.5px)",
-					opacity: "0.08",
+					filter: "blur(8px)",
+					opacity: "0.04",
 					transform: "scale(0.985)",
 					textShadow: "none",
 					color: "",
 				});
 			} else {
-				const blur = Math.min(4.5 + (dist - 3) * 1.5, 12);
-				const opacity = Math.max(0.01, 0.05 - (dist - 3) * 0.01);
+				const blur = Math.min(8 + (dist - 3) * 2, 16);
+				const opacity = Math.max(0.01, 0.03 - (dist - 3) * 0.005);
 				applyStylesToBlock(block, {
 					filter: `blur(${blur}px)`,
 					opacity: `${opacity}`,
@@ -1334,6 +1592,7 @@
 		lastFocusStyleIndices = nextStyleIndices;
 		lastFocusStyleTheme = $currentTheme.name;
 		lastFocusSearchIndex = currentSearchIndex;
+		lastFocusStyleKeyScrollActive = isFocusKeyScrollActive;
 		lastFocusedIdx = hitIdx;
 	}
 
@@ -1356,9 +1615,10 @@
 
 		const baseIdx = lastFocusedIdx >= 0 ? lastFocusedIdx : getClosestFocusIndex(blocks);
 		const nextIdx = clampFocusIndex(baseIdx + direction, blocks.length);
+		focusLockedIndex = nextIdx;
 		markFocusScrollActive();
 		updateFocusParagraph(nextIdx);
-		scrollBlockToFocusPosition(blocks[nextIdx]);
+		scrollBlockToFocusPosition(blocks[nextIdx], nextIdx);
 		updateSpotlightPosition();
 	}
 
@@ -1370,8 +1630,16 @@
 		lastFocusStyleIndices = new Set<number>();
 		lastFocusStyleTheme = "";
 		lastFocusSearchIndex = -1;
+		lastFocusStyleKeyScrollActive = false;
 		lastFocusedIdx = -1;
 		lastFocusRenderSignature = "";
+		lastSpotlightVars = new Map<string, string>();
+	}
+
+	function setRootStylePropertyIfChanged(style: CSSStyleDeclaration, name: string, value: string) {
+		if (lastSpotlightVars.get(name) === value) return;
+		style.setProperty(name, value);
+		lastSpotlightVars.set(name, value);
 	}
 
 	function updateSpotlightPosition() {
@@ -1395,11 +1663,11 @@
 			spotlightHeight = targetSpotlightHeight;
 		}
 		const docStyle = document.documentElement.style;
-		docStyle.setProperty("--spotlight-top", `${anchorY - spotlightHeight / 2}px`);
-		docStyle.setProperty("--spotlight-height", `${spotlightHeight}px`);
-		docStyle.setProperty("--spotlight-left", `${rect.left}px`);
-		docStyle.setProperty("--spotlight-right", `${rect.right}px`);
-		docStyle.setProperty("--anchor-y", `${anchorY}px`);
+		setRootStylePropertyIfChanged(docStyle, "--spotlight-top", `${anchorY - spotlightHeight / 2}px`);
+		setRootStylePropertyIfChanged(docStyle, "--spotlight-height", `${spotlightHeight}px`);
+		setRootStylePropertyIfChanged(docStyle, "--spotlight-left", `${rect.left}px`);
+		setRootStylePropertyIfChanged(docStyle, "--spotlight-right", `${rect.right}px`);
+		setRootStylePropertyIfChanged(docStyle, "--anchor-y", `${anchorY}px`);
 	}
 
 	function enterFocusMode() {
@@ -1412,15 +1680,18 @@
 		lastFocusStyleIndices = new Set<number>();
 		lastFocusStyleTheme = "";
 		lastFocusSearchIndex = -1;
+		lastFocusStyleKeyScrollActive = false;
 		spotlightHeight = 100;
+		lastSpotlightVars = new Map<string, string>();
 
 		const preferredIdx = getSearchPreferredFocusIndex();
 		updateFocusParagraph(preferredIdx);
 		const blocks = getFocusBlocks();
 		if (blocks.length === 0 || lastFocusedIdx < 0) return;
 
+		focusLockedIndex = lastFocusedIdx;
 		markFocusScrollActive();
-		scrollBlockToFocusPosition(blocks[lastFocusedIdx]);
+		scrollBlockToFocusPosition(blocks[lastFocusedIdx], lastFocusedIdx);
 		updateFocusParagraph(lastFocusedIdx);
 		updateSpotlightPosition();
 	}
@@ -1454,6 +1725,9 @@
 		focusWheelDelta = 0;
 		focusEdgeSpace = 0;
 		spotlightHeight = 100;
+		focusLockedIndex = null;
+		clearProgrammaticFocusScrollLock();
+		lastSpotlightVars = new Map<string, string>();
 		lastFocusSearchIndex = -1;
 		return true;
 	}
@@ -1605,6 +1879,7 @@
 	class="app"
 	class:focus-mode={$focusMode}
 	class:focus-scroll-active={isFocusScrollActive}
+	class:focus-key-scroll-active={isFocusKeyScrollActive}
 	class:is-light-theme={isLightTheme}
 	class:editing-in-focus={isEditingInDarkFocus}
 	role="application"
@@ -2323,9 +2598,6 @@
 		overflow-x: hidden;
 		scroll-behavior: smooth;
 	}
-	.app.focus-mode .content {
-		scroll-behavior: auto;
-	}
 
 	.article {
 		--article-padding-x: 48px;
@@ -2554,11 +2826,9 @@
 			color 0.4s ease,
 			text-shadow 0.4s ease;
 	}
-	.focus-scroll-active :global(.article > *) {
-		transition: none;
-	}
-	.focus-scroll-active :global([data-focus-block="true"] > td),
-	.focus-scroll-active :global([data-focus-block="true"] > th) {
+	.focus-key-scroll-active :global(.article > *),
+	.focus-key-scroll-active :global([data-focus-block="true"] > td),
+	.focus-key-scroll-active :global([data-focus-block="true"] > th) {
 		transition: none;
 	}
 	.focus-mode :global(.article blockquote),
