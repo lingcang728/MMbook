@@ -6,6 +6,11 @@
 	import { open } from "@tauri-apps/plugin-dialog";
 	import { openUrl } from "@tauri-apps/plugin-opener";
 	import { check } from "@tauri-apps/plugin-updater";
+	import {
+		getMarkdownSourceBlock,
+		normalizeMarkdownEditText,
+		replaceMarkdownSourceBlock
+	} from "$lib/edit/sourceBlock";
 	import { getFocusScrollTarget } from "$lib/focus/scroll";
 	import { resolveMarkdownImageSources } from "$lib/render/images";
 	import type { RenderedMarkdownDocument, TocItem } from "$lib/render/markdown";
@@ -36,9 +41,12 @@
 	let searchMatches: SearchMatch[] = [];
 	let currentMatchIndex = -1;
 	let currentSearchMark: HTMLElement | null = null;
+	type EditMode = "rendered-text" | "markdown-source";
 	let editingParagraph: HTMLElement | null = null;
+	let editMode: EditMode = "rendered-text";
 	let originalText = "";
 	let originalTextContent = "";
+	let originalMarkdownBlock = "";
 	let focusBlocks: HTMLElement[] = [];
 	let focusBlockMetrics: { top: number; bottom: number; center: number }[] = [];
 	let focusMetricsValid = false;
@@ -74,6 +82,8 @@
 		resolve: (result: RenderedMarkdownDocument) => void;
 		reject: (error: Error) => void;
 	}>();
+	let pendingArticleLinkOpenTimer: ReturnType<typeof setTimeout> | null = null;
+	let pendingArticleLinkOpenUrl = "";
 	let spotlightHeight = 100;
 
 	let isEditingInDarkFocus = false;
@@ -124,6 +134,7 @@
 	const FOCUS_KEY_SCROLL_MIN_SPEED = 780;
 	const FOCUS_KEY_SCROLL_MAX_SPEED = 1260;
 	const FOCUS_KEY_SCROLL_MAX_FRAME_MS = 32;
+	const ARTICLE_LINK_OPEN_DELAY_MS = 240;
 	let focusEdgeSpace = 0;
 	let focusWheelDelta = 0;
 	let focusWheelResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -222,15 +233,32 @@
 		return null;
 	}
 
+	function cancelPendingArticleLinkOpen() {
+		if (!pendingArticleLinkOpenTimer) return;
+		clearTimeout(pendingArticleLinkOpenTimer);
+		pendingArticleLinkOpenTimer = null;
+		pendingArticleLinkOpenUrl = "";
+	}
+
 	function handleArticleLinkClick(event: MouseEvent, link: HTMLAnchorElement): boolean {
 		const externalUrl = getExternalUrlToOpen(link.getAttribute("href"));
 		if (!externalUrl) return false;
 
 		event.preventDefault();
 		event.stopPropagation();
-		void openUrl(externalUrl).catch((err) => {
-			console.error("Failed to open external URL:", err);
-		});
+
+		cancelPendingArticleLinkOpen();
+		if (event.detail > 1) return true;
+
+		pendingArticleLinkOpenUrl = externalUrl;
+		pendingArticleLinkOpenTimer = setTimeout(() => {
+			const url = pendingArticleLinkOpenUrl;
+			pendingArticleLinkOpenTimer = null;
+			pendingArticleLinkOpenUrl = "";
+			void openUrl(url).catch((err) => {
+				console.error("Failed to open external URL:", err);
+			});
+		}, ARTICLE_LINK_OPEN_DELAY_MS);
 		return true;
 	}
 
@@ -653,7 +681,10 @@
 		};
 
 		const handleDblClick = (e: MouseEvent) => {
-			const target = (e.target as HTMLElement)?.closest("p, h1, h2, h3, h4, h5, h6, li, blockquote");
+			cancelPendingArticleLinkOpen();
+			e.preventDefault();
+			e.stopPropagation();
+			const target = (e.target as HTMLElement)?.closest("p, h1, h2, h3, h4, h5, h6, li, blockquote, pre");
 			if (target && contentEl.querySelector(".article")?.contains(target)) {
 				startEdit(target as HTMLElement);
 			}
@@ -764,6 +795,7 @@
 			if (saveStateTimer) {
 				clearTimeout(saveStateTimer);
 			}
+			cancelPendingArticleLinkOpen();
 			clearFocusScrollActive();
 			if (focusUpdateFrame !== null) {
 				cancelAnimationFrame(focusUpdateFrame);
@@ -882,19 +914,28 @@
 		// Ignore new edit attempts while already editing to prevent accidental data loss
 		if (editingParagraph) return;
 		if (!$currentFilePath) return;
-		// Refuse editing blocks with inline markup or nested block structure.
-		// Heuristic diff cannot safely map rendered HTML back to markdown
-		// for links, emphasis, inline code, nested lists, multi-paragraph quotes, etc.
-		// Note: descendant <p> is intentionally NOT blocked — simple paragraphs
-		// inside blockquotes are acceptable single-paragraph blocks.
-		if (el.querySelector('a, code:not(.shiki code), strong, em, img, sup, sub, del, s, mark, ins, kbd, input[type="checkbox"], ul, ol, blockquote, pre, table')) {
-			return;
-		}
+
+		// Rendered text edits are only safe for plain blocks. For richer Markdown,
+		// edit the original source range instead of silently refusing the double-click.
+		const canEditRenderedText = el.tagName !== "PRE" && !el.querySelector('a, code:not(.shiki code), strong, em, img, sup, sub, del, s, mark, ins, kbd, input[type="checkbox"], ul, ol, blockquote, pre, table');
+		const sourceStart = parseInt(el.dataset.sourceStart || '-1');
+		const sourceEnd = parseInt(el.dataset.sourceEnd || '-1');
+		const sourceBlock = canEditRenderedText
+			? ""
+			: getMarkdownSourceBlock($markdownSource, sourceStart, sourceEnd);
+		if (!canEditRenderedText && sourceBlock === null) return;
+
 		editingParagraph = el;
+		editMode = canEditRenderedText ? "rendered-text" : "markdown-source";
 		originalText = el.innerHTML;
 		originalTextContent = el.innerText || '';
-		el.setAttribute("contenteditable", "true");
+		originalMarkdownBlock = sourceBlock ?? "";
+		if (editMode === "markdown-source") {
+			el.textContent = originalMarkdownBlock;
+		}
+		el.setAttribute("contenteditable", editMode === "markdown-source" ? "plaintext-only" : "true");
 		el.classList.add("editing");
+		el.classList.toggle("editing-markdown-source", editMode === "markdown-source");
 		el.focus();
 
 		el.addEventListener("blur", finishEdit, { once: true });
@@ -954,11 +995,14 @@
 
 	function teardownEdit(el: HTMLElement) {
 		editingParagraph = null;
+		editMode = "rendered-text";
+		originalMarkdownBlock = "";
 		el.removeEventListener("blur", finishEdit);
 		el.removeEventListener("keydown", handleEditKeydown);
 		el.removeEventListener("input", updateEditOrbitPosition);
 		el.removeAttribute("contenteditable");
 		el.classList.remove("editing");
+		el.classList.remove("editing-markdown-source");
 		cleanupEditOrbit();
 	}
 
@@ -1021,12 +1065,35 @@
 		return null;
 	}
 
+	async function refreshRenderedMarkdownAfterEdit(scrollPos: number) {
+		const rendered = await renderMarkdownForUi($markdownSource);
+		$renderedHtml = resolveRenderedHtmlAssets(rendered.html, $currentFilePath);
+		tocItems = rendered.toc;
+		await tick();
+		if (contentEl) contentEl.scrollTop = scrollPos;
+		focusStyleCache = new WeakMap<HTMLElement, string>();
+		lastFocusStyleIndices = new Set<number>();
+		lastFocusStyleTheme = "";
+		lastFocusSearchIndex = -1;
+		lastFocusRenderSignature = "";
+
+		if ($searchQuery.trim()) {
+			performSearch();
+		} else if ($focusMode) {
+			refreshFocusBlocks();
+			scheduleFocusUpdate(lastFocusedIdx >= 0 ? lastFocusedIdx : undefined);
+		} else {
+			clearFocusBlockIndex();
+		}
+	}
+
 	async function finishEdit(): Promise<boolean> {
 		if (!editingParagraph) return true;
 		if (finishEditPromise) return finishEditPromise;
 
 		finishEditPromise = (async (): Promise<boolean> => {
 			const el = editingParagraph;
+			const activeEditMode = editMode;
 			const newTextContent = el.innerText || '';
 
 			// Capture path/encoding and original source before any mutation
@@ -1034,7 +1101,56 @@
 			const saveEncoding = fileEncoding;
 			const oldText = originalText;
 			const oldTextContent = originalTextContent;
+			const oldMarkdownBlock = originalMarkdownBlock;
 			const oldMarkdownSource = $markdownSource;
+
+			if (activeEditMode === "markdown-source") {
+				const newMarkdownBlock = normalizeMarkdownEditText(newTextContent);
+				if (newMarkdownBlock === oldMarkdownBlock) {
+					teardownEdit(el);
+					el.innerHTML = oldText;
+					return true;
+				}
+
+				if (!savePath) {
+					teardownEdit(el);
+					el.innerHTML = oldText;
+					return false;
+				}
+
+				const sourceStart = parseInt(el.dataset.sourceStart || '-1');
+				const sourceEnd = parseInt(el.dataset.sourceEnd || '-1');
+				const updatedMarkdownSource = replaceMarkdownSourceBlock(
+					oldMarkdownSource,
+					sourceStart,
+					sourceEnd,
+					newMarkdownBlock,
+				);
+				if (updatedMarkdownSource === null) {
+					teardownEdit(el);
+					el.innerHTML = oldText;
+					return false;
+				}
+				$markdownSource = updatedMarkdownSource;
+
+				try {
+					await invoke('save_markdown_file', { path: savePath, content: $markdownSource, encoding: saveEncoding });
+					fileError = "";
+				} catch (err) {
+					console.error('Failed to save:', err);
+					fileError = `保存失败：${err instanceof Error ? err.message : String(err)}`;
+					$markdownSource = oldMarkdownSource;
+					teardownEdit(el);
+					el.innerHTML = oldText;
+					return false;
+				}
+
+				const scrollPos = contentEl?.scrollTop ?? 0;
+				teardownEdit(el);
+				await refreshRenderedMarkdownAfterEdit(scrollPos);
+				await saveState();
+				return true;
+			}
 
 			if (newTextContent === oldTextContent) {
 				// No changes — just clean up
@@ -1106,27 +1222,7 @@
 
 			// Re-render to keep data-source-* attributes in sync
 			const scrollPos = contentEl?.scrollTop ?? 0;
-			const rendered = await renderMarkdownForUi($markdownSource);
-			$renderedHtml = resolveRenderedHtmlAssets(rendered.html, $currentFilePath);
-			tocItems = rendered.toc;
-			await tick();
-			if (contentEl) contentEl.scrollTop = scrollPos;
-			focusStyleCache = new WeakMap<HTMLElement, string>();
-			lastFocusStyleIndices = new Set<number>();
-			lastFocusStyleTheme = "";
-			lastFocusSearchIndex = -1;
-			lastFocusRenderSignature = "";
-
-			// Refresh focus blocks after re-render so focus mode stays in sync
-			if ($searchQuery.trim()) {
-				// Rebuild search highlights if search is active, since DOM was replaced
-				performSearch();
-			} else if ($focusMode) {
-				refreshFocusBlocks();
-				scheduleFocusUpdate(lastFocusedIdx >= 0 ? lastFocusedIdx : undefined);
-			} else {
-				clearFocusBlockIndex();
-			}
+			await refreshRenderedMarkdownAfterEdit(scrollPos);
 
 			await saveState();
 			return true;
@@ -2838,6 +2934,11 @@
 		cursor: text;
 		animation: editBreath 2.5s ease-in-out infinite;
 	}
+
+	:global(.editing-markdown-source) {
+		white-space: pre-wrap;
+	}
+
 	@keyframes editBreath {
 		0%, 100% { box-shadow: 0 0 0 1.5px var(--selection); }
 		50% { box-shadow: 0 0 0 2px var(--selection), 0 0 10px var(--selection); }
