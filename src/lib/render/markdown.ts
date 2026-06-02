@@ -128,6 +128,41 @@ function escapeHtml(str: string): string {
 		.replace(/'/g, '&#39;');
 }
 
+function blankLineContent(line: string): string {
+	return line.replace(/[^\r\n]/g, '');
+}
+
+function lineContent(line: string): string {
+	return line.replace(/\r\n$|\n$|\r$/g, '');
+}
+
+export function stripYamlFrontMatterForRender(source: string): string {
+	const lines = source.match(/.*(?:\r\n|\n|\r|$)/g) ?? [];
+	if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+	if (lines.length < 2) return source;
+
+	const firstRawLine = lines[0];
+	if (firstRawLine === undefined) return source;
+
+	const firstLine = lineContent(firstRawLine).replace(/^\ufeff/, '');
+	if (!/^---[ \t]*$/.test(firstLine)) return source;
+
+	let closingLineIndex = -1;
+	for (let i = 1; i < lines.length; i += 1) {
+		const line = lines[i];
+		if (line !== undefined && /^(---|\.\.\.)[ \t]*$/.test(lineContent(line))) {
+			closingLineIndex = i;
+			break;
+		}
+	}
+
+	if (closingLineIndex === -1) return source;
+
+	return lines
+		.map((line, index) => (index <= closingLineIndex ? blankLineContent(line) : line))
+		.join('');
+}
+
 export interface TocItem {
 	level: number;
 	text: string;
@@ -271,6 +306,7 @@ async function highlightCodeBlocks(html: string): Promise<string> {
 
 export async function renderMarkdownDocument(source: string): Promise<RenderedMarkdownDocument> {
 	const toc: TocItem[] = [];
+	const renderSource = stripYamlFrontMatterForRender(source);
 	const result = await unified()
 		.use(remarkParse)
 		.use(remarkGfm)
@@ -279,7 +315,7 @@ export async function renderMarkdownDocument(source: string): Promise<RenderedMa
 		.use(rehypeSanitize, sanitizeSchema)
 		.use(rehypeDocumentMetadata, toc)
 		.use(rehypeStringify)
-		.process(source);
+		.process(renderSource);
 
 	return {
 		html: await highlightCodeBlocks(String(result)),

@@ -126,9 +126,14 @@ fn initial_markdown_path(args: &[String]) -> Option<String> {
 }
 
 #[tauri::command]
-fn read_markdown_file(path: String) -> Result<ReadResult, String> {
+fn read_markdown_file(app: tauri::AppHandle, path: String) -> Result<ReadResult, String> {
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
     let (content, encoding) = decode_markdown_bytes(bytes)?;
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        app.asset_protocol_scope()
+            .allow_directory(parent, true)
+            .map_err(|e| e.to_string())?;
+    }
     Ok(ReadResult { content, encoding })
 }
 

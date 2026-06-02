@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { addHeadingIds, extractToc, renderMarkdown, renderMarkdownDocument } from './markdown';
+import {
+	addHeadingIds,
+	extractToc,
+	renderMarkdown,
+	renderMarkdownDocument,
+	stripYamlFrontMatterForRender
+} from './markdown';
 
 describe('renderMarkdown', () => {
 	it('sanitizes unsafe HTML payloads', async () => {
@@ -38,6 +44,31 @@ describe('renderMarkdown', () => {
 		expect(html).toContain('class="shiki');
 		expect(html).toContain('data-source-start="3"');
 		expect(html).toContain('data-source-end="5"');
+	});
+
+	it('hides leading YAML front matter without shifting source line positions', async () => {
+		const source = [
+			'---',
+			'title: Skills',
+			'tags:',
+			'  - codex',
+			'---',
+			'# Heading'
+		].join('\n');
+
+		const result = await renderMarkdownDocument(source);
+
+		expect(result.html).not.toContain('title: Skills');
+		expect(result.html).toContain('id="heading"');
+		expect(result.html).toContain('data-source-start="6"');
+		expect(result.html).toContain('data-source-end="6"');
+		expect(result.toc).toEqual([{ level: 1, text: 'Heading', id: 'heading' }]);
+	});
+
+	it('leaves an opening thematic break alone when there is no YAML close marker', () => {
+		const source = '---\n# Heading';
+
+		expect(stripYamlFrontMatterForRender(source)).toBe(source);
 	});
 
 	it('decodes escaped heading text for generated ids and TOC labels', async () => {

@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount, tick } from "svelte";
-	import { invoke } from "@tauri-apps/api/core";
+	import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 	import { listen } from "@tauri-apps/api/event";
 	import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 	import { open } from "@tauri-apps/plugin-dialog";
 	import { openUrl } from "@tauri-apps/plugin-opener";
 	import { check } from "@tauri-apps/plugin-updater";
 	import { getFocusScrollTarget } from "$lib/focus/scroll";
+	import { resolveMarkdownImageSources } from "$lib/render/images";
 	import type { RenderedMarkdownDocument, TocItem } from "$lib/render/markdown";
 	import {
 		currentFilePath,
@@ -201,6 +202,11 @@
 
 		const { renderMarkdownDocument } = await import("$lib/render/markdown");
 		return renderMarkdownDocument(source);
+	}
+
+	function resolveRenderedHtmlAssets(html: string, path: string | null): string {
+		if (!path) return html;
+		return resolveMarkdownImageSources(html, path, convertFileSrc);
 	}
 
 	function getExternalUrlToOpen(rawHref: string | null): string | null {
@@ -812,7 +818,7 @@
 			fileName = nextFileName;
 			$markdownSource = result.content;
 			fileEncoding = result.encoding;
-			$renderedHtml = rendered.html;
+			$renderedHtml = resolveRenderedHtmlAssets(rendered.html, path);
 			tocItems = rendered.toc;
 
 			// Reset focus state when file changes
@@ -1101,7 +1107,7 @@
 			// Re-render to keep data-source-* attributes in sync
 			const scrollPos = contentEl?.scrollTop ?? 0;
 			const rendered = await renderMarkdownForUi($markdownSource);
-			$renderedHtml = rendered.html;
+			$renderedHtml = resolveRenderedHtmlAssets(rendered.html, $currentFilePath);
 			tocItems = rendered.toc;
 			await tick();
 			if (contentEl) contentEl.scrollTop = scrollPos;
