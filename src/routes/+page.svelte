@@ -1640,6 +1640,25 @@
 			const block = blocks[i];
 			if (!block) continue;
 			const dist = Math.abs(i - hitIdx);
+
+			// Blocks beyond the focus window are fully hidden WITHOUT filter/transform.
+			// blur() and scale() each force a persistent GPU compositing layer, so if we
+			// leave them on far blocks, every block ever scrolled past keeps a blurred
+			// layer alive. A long document then accumulates hundreds of composited layers
+			// (one per block, plus the whole doc gets them on focus-mode entry), and the
+			// compositor occasionally drops/recreates a frame — the full-screen flicker.
+			// Hiding with plain opacity keeps the live layer count bounded (~2*radius).
+			if (dist > FOCUS_STYLE_RADIUS) {
+				applyStylesToBlock(block, {
+					filter: "none",
+					opacity: "0",
+					transform: "none",
+					textShadow: "none",
+					color: "",
+				});
+				continue;
+			}
+
 			const isCurrentFocus = i === hitIdx;
 			const textColor = /^H[1-6]$/.test(block.tagName) ? "var(--heading)" : "";
 			const glow = hasGlow && (isCurrentFocus || block === currentSearchBlock)
