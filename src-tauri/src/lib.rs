@@ -125,6 +125,19 @@ fn initial_markdown_path(args: &[String]) -> Option<String> {
     None
 }
 
+/// File mtime in milliseconds since epoch — the frontend polls this to
+/// auto-reload when the file is changed by an external editor.
+#[tauri::command]
+fn get_file_mtime(path: String) -> Result<u64, String> {
+    let meta = fs::metadata(&path).map_err(|e| e.to_string())?;
+    let modified = meta.modified().map_err(|e| e.to_string())?;
+    let ms = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+    Ok(ms)
+}
+
 #[tauri::command]
 fn read_markdown_file(app: tauri::AppHandle, path: String) -> Result<ReadResult, String> {
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
@@ -215,6 +228,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            get_file_mtime,
             read_markdown_file,
             save_markdown_file,
             load_reading_state,

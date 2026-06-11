@@ -26,11 +26,43 @@
 		tocOpen,
 		settingsOpen,
 	} from "$lib/stores/app";
-	import { getThemePairs } from "$lib/theme/themes";
+	import SearchBar from "$lib/components/SearchBar.svelte";
+	import TocPanel from "$lib/components/TocPanel.svelte";
+	import SettingsPanel from "$lib/components/SettingsPanel.svelte";
 
 	let contentEl: HTMLElement;
-	let searchInput: HTMLInputElement;
 	let tocItems: TocItem[] = [];
+
+	// 最近打开的文件（欢迎页展示，localStorage 持久化）
+	interface RecentFile {
+		path: string;
+		name: string;
+		openedAt: number;
+	}
+	const RECENT_FILES_KEY = "mmbook.recentFiles";
+	const RECENT_FILES_LIMIT = 8;
+	let recentFiles: RecentFile[] = [];
+
+	function loadRecentFiles(): RecentFile[] {
+		try {
+			const raw = localStorage.getItem(RECENT_FILES_KEY);
+			return raw ? (JSON.parse(raw) as RecentFile[]) : [];
+		} catch {
+			return [];
+		}
+	}
+
+	function recordRecentFile(path: string, name: string) {
+		recentFiles = [
+			{ path, name, openedAt: Date.now() },
+			...recentFiles.filter((f) => f.path !== path),
+		].slice(0, RECENT_FILES_LIMIT);
+		try {
+			localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(recentFiles));
+		} catch {
+			// localStorage 不可用时静默降级
+		}
+	}
 	let fileName = "";
 	let fileEncoding = 'utf-8';
 	let fileError = "";
@@ -495,12 +527,11 @@
 			if (isModKey(e) && e.key === "f") {
 				e.preventDefault();
 				$searchOpen = !$searchOpen;
-				if ($searchOpen) {
-					tick().then(() => searchInput?.focus());
-				} else {
+				if (!$searchOpen) {
 					$searchQuery = "";
 					clearSearchHighlights();
 				}
+				// 打开时的聚焦由 SearchBar 组件自身完成
 				return;
 			}
 
@@ -773,7 +804,43 @@
 		// Silent auto-update: download + install in background, applies on next launch.
 		scheduleUpdateCheck();
 
+		recentFiles = loadRecentFiles();
+
+		// 外部变更自动重载：每 2s 轮询当前文件 mtime；
+		// 内容与内存一致（如刚由本应用保存）或正在编辑时不打断。
+		let watchedPath = "";
+		let watchedMtime = 0;
+		const fileWatchTimer = window.setInterval(async () => {
+			const path = $currentFilePath;
+			if (!path) {
+				watchedPath = "";
+				return;
+			}
+			try {
+				const mtime = await invoke<number>("get_file_mtime", { path });
+				if (watchedPath !== path) {
+					watchedPath = path;
+					watchedMtime = mtime;
+					return;
+				}
+				if (mtime <= watchedMtime) return;
+				watchedMtime = mtime;
+				if (editingParagraph) return;
+				const result = await invoke<{ content: string; encoding: string }>(
+					"read_markdown_file",
+					{ path },
+				);
+				if (result.content === $markdownSource) return;
+				const scrollTop = contentEl?.scrollTop ?? 0;
+				await openFile(path);
+				if (contentEl) contentEl.scrollTop = scrollTop;
+			} catch {
+				// 文件被移动/删除等情况：静默忽略，下次轮询再试
+			}
+		}, 2000);
+
 		return () => {
+			window.clearInterval(fileWatchTimer);
 			unlistenDrop.then(fn => fn());
 			unlistenOpenFile.then(fn => fn());
 			unlistenClose.then(fn => fn());
@@ -884,6 +951,7 @@
 			}
 
 			loadSucceeded = true;
+			recordRecentFile(path, nextFileName);
 
 		} catch (err) {
 			if (currentLoadToken !== loadToken) return;
@@ -2018,7 +2086,6 @@
 		searchDebounceTimer = setTimeout(() => performSearch(), 180);
 	}
 
-	let themePairs = getThemePairs();
 </script>
 
 <div
@@ -2103,11 +2170,7 @@
 				<button
 					class="icon-btn"
 					class:active={$searchOpen}
-					on:click={() => {
-						$searchOpen = !$searchOpen;
-						if ($searchOpen)
-							tick().then(() => searchInput?.focus());
-					}}
+					on:click={() => ($searchOpen = !$searchOpen)}
 					title="搜索 ({modLabel}F)"
 				>
 					<svg
@@ -2147,117 +2210,19 @@
 	</header>
 
 	<!-- Search bar -->
-	{#if $searchOpen}
-		<!-- svelte-ignore a11y-click-events-have-key-events -->
-		<!-- svelte-ignore a11y-no-static-element-interactions -->
-		<div class="search-overlay" class:has-results={searchMatches.length > 0} on:click={() => { $searchOpen = false; $searchQuery = ""; clearSearchHighlights(); }}>
-			<div class="mac-search-bar" on:click|stopPropagation>
-				<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2">
-					<circle cx="11" cy="11" r="7" />
-					<path d="M21 21l-4.35-4.35" />
-				</svg>
-				<input
-					bind:this={searchInput}
-					bind:value={$searchQuery}
-					on:input={scheduleSearch}
-					placeholder="搜索..."
-					class="search-input"
-				/>
-				{#if searchMatches.length > 0}
-					<span class="search-count">{currentMatchIndex + 1} / {searchMatches.length}</span>
-				{/if}
-				<button class="search-nav" on:click={() => navigateSearch(-1)} title="上一条结果">
-					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6" /></svg>
-				</button>
-				<button class="search-nav" on:click={() => navigateSearch(1)} title="下一条结果">
-					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" /></svg>
-				</button>
-			</div>
-		</div>
-	{/if}
+	<SearchBar
+		matchCount={searchMatches.length}
+		currentIndex={currentMatchIndex}
+		onInput={scheduleSearch}
+		onNavigate={navigateSearch}
+		onClose={clearSearchHighlights}
+	/>
 
 	<!-- TOC overlay -->
-	{#if $tocOpen && tocItems.length > 0}
-		<!-- svelte-ignore a11y-click-events-have-key-events -->
-		<!-- svelte-ignore a11y-no-static-element-interactions -->
-		<div
-			class="toc-overlay"
-			on:click={() => ($tocOpen = false)}
-			role="presentation"
-		>
-			<div
-				class="toc-panel"
-				on:click|stopPropagation
-				on:keydown|stopPropagation
-				role="presentation"
-			>
-				<div class="toc-title">目录</div>
-				{#each tocItems as item}
-					<button
-						class="toc-item toc-level-{item.level}"
-						on:click={() => scrollToHeading(item.id)}
-					>
-						{item.text}
-					</button>
-				{/each}
-			</div>
-		</div>
-	{/if}
+	<TocPanel items={tocItems} onJump={scrollToHeading} />
 
 	<!-- Settings overlay -->
-	{#if $settingsOpen}
-		<!-- svelte-ignore a11y-click-events-have-key-events -->
-		<!-- svelte-ignore a11y-no-static-element-interactions -->
-		<div
-			class="settings-overlay"
-			on:click={() => ($settingsOpen = false)}
-			role="presentation"
-		>
-			<div
-				class="settings-panel"
-				on:click|stopPropagation
-				on:keydown|stopPropagation
-				role="presentation"
-			>
-				<div class="settings-title">主题</div>
-				<div class="theme-grid">
-					{#each themePairs as pair}
-						<button
-							class="theme-option"
-							class:active={$currentTheme.name ===
-								pair.light.name}
-							on:click={() => ($currentTheme = pair.light)}
-						>
-							<div
-								class="theme-preview"
-								style="background: {pair.light.vars[
-									'--bg'
-								]}; color: {pair.light.vars['--text']}"
-							>
-								Aa
-							</div>
-							<span>{pair.label} 浅色</span>
-						</button>
-						<button
-							class="theme-option"
-							class:active={$currentTheme.name === pair.dark.name}
-							on:click={() => ($currentTheme = pair.dark)}
-						>
-							<div
-								class="theme-preview"
-								style="background: {pair.dark.vars[
-									'--bg'
-								]}; color: {pair.dark.vars['--text']}"
-							>
-								Aa
-							</div>
-							<span>{pair.label} 深色</span>
-						</button>
-					{/each}
-				</div>
-			</div>
-		</div>
-	{/if}
+	<SettingsPanel />
 
 	<!-- Main content -->
 	<main class="content" bind:this={contentEl}>
@@ -2296,6 +2261,21 @@
 				<p class="welcome-text">
 					打开一个 Markdown 文件开始阅读				</p>
 				<p class="welcome-hint">{modLabel}O 或将文件拖到此处</p>
+				{#if recentFiles.length > 0}
+					<div class="recent-files">
+						<div class="recent-title">最近打开</div>
+						{#each recentFiles as f (f.path)}
+							<button
+								class="recent-item"
+								on:click={() => openFile(f.path)}
+								title={f.path}
+							>
+								<span class="recent-name">{f.name}</span>
+								<span class="recent-path">{f.path}</span>
+							</button>
+						{/each}
+					</div>
+				{/if}
 			</div>
 		{/if}
 	</main>
@@ -2481,260 +2461,6 @@
 		color: var(--link);
 		background: var(--bg-secondary);
 		border-color: var(--hr);
-	}
-
-	/* ========== Search bar (macOS Spotlight Style) ========== */
-	.search-overlay {
-		position: fixed;
-		inset: 0;
-		z-index: 1000;
-		background: rgba(0, 0, 0, 0.25);
-		backdrop-filter: blur(12px);
-		-webkit-backdrop-filter: blur(12px);
-		display: flex;
-		justify-content: center;
-		padding-top: 20vh;
-		animation: fadeIn 0.15s ease;
-	}
-.search-overlay.has-results {
-		background: transparent;
-		backdrop-filter: none;
-		-webkit-backdrop-filter: none;
-	}
-	.is-light-theme .search-overlay {
-		background: rgba(180, 180, 180, 0.1);
-	}
-.is-light-theme .search-overlay.has-results {
-		background: transparent;
-	}
-	
-	.mac-search-bar {
-		width: 640px;
-		max-width: 90vw;
-		height: 64px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--hr);
-		border-radius: 16px;
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1);
-		display: flex;
-		align-items: center;
-		padding: 0 20px;
-		gap: 16px;
-		animation: scaleIn 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
-	}
-	.is-light-theme .mac-search-bar {
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.15), inset 0 1px 1px rgba(255, 255, 255, 0.8);
-		background: rgba(255, 255, 255, 0.8);
-	}
-	
-	.search-input {
-		flex: 1;
-		border: none;
-		background: none;
-		color: var(--text);
-		font-size: 20px;
-		outline: none;
-	}
-	.search-input::placeholder {
-		color: var(--text-faded);
-	}
-	.search-count {
-		font-size: 14px;
-		color: var(--text-faded);
-		white-space: nowrap;
-		margin-right: 8px;
-	}
-	.search-nav {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 32px;
-		height: 32px;
-		border: 1px solid transparent;
-		background: transparent;
-		color: var(--text-secondary);
-		cursor: pointer;
-		border-radius: 8px;
-		transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-		position: relative;
-		overflow: hidden;
-	}
-	.search-nav::after {
-		content: ''; position: absolute; inset: 0;
-		background: linear-gradient(135deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0) 50%, rgba(255, 255, 255, 0.1) 100%);
-		opacity: 0; transition: opacity 0.3s ease;
-		pointer-events: none;
-	}
-	.search-nav:hover {
-		background: var(--bg);
-		border-color: var(--hr);
-		color: var(--text);
-		transform: translateY(-1px);
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-	}
-	.search-nav:hover::after {
-		opacity: 1;
-	}
-	.search-nav:active {
-		transform: translateY(0);
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-	}
-
-	/* ========== TOC ========== */
-	.toc-overlay {
-		position: fixed;
-		inset: 0;
-		z-index: 40;
-		background: rgba(0, 0, 0, 0.15);
-		animation: fadeIn 0.15s ease;
-	}
-	.toc-panel {
-		position: absolute;
-		right: 0;
-		top: 40px;
-		bottom: 0;
-		width: 280px;
-		max-width: 80vw;
-		background: var(--bg);
-		border-left: 1px solid var(--hr);
-		padding: 20px 16px;
-		overflow-y: auto;
-		animation: slideIn 0.2s ease;
-	}
-	.toc-title {
-		font-size: 12px;
-		font-weight: 600;
-		color: var(--text-faded);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		margin-bottom: 12px;
-	}
-	.toc-item {
-		display: block;
-		width: 100%;
-		text-align: left;
-		border: 1px solid transparent;
-		background: transparent;
-		color: var(--text-secondary);
-		font-size: 13px;
-		padding: 6px 8px;
-		border-radius: 8px;
-		cursor: pointer;
-		transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
-		line-height: 1.4;
-	}
-	.toc-item:hover {
-		background: var(--bg-secondary);
-		color: var(--text);
-		transform: translateX(2px) translateY(-1px);
-		box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-		border-color: var(--hr);
-	}
-	.toc-level-1 {
-		padding-left: 8px;
-		font-weight: 600;
-	}
-	.toc-level-2 {
-		padding-left: 20px;
-	}
-	.toc-level-3 {
-		padding-left: 32px;
-		font-size: 12px;
-	}
-	.toc-level-4 {
-		padding-left: 44px;
-		font-size: 12px;
-	}
-	.toc-level-5 {
-		padding-left: 56px;
-		font-size: 12px;
-	}
-	.toc-level-6 {
-		padding-left: 68px;
-		font-size: 12px;
-	}
-
-	/* ========== Settings ========== */
-	.settings-overlay {
-		position: fixed;
-		inset: 0;
-		z-index: 40;
-		background: rgba(0, 0, 0, 0.15);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		animation: fadeIn 0.15s ease;
-	}
-	.settings-panel {
-		background: var(--bg);
-		border: 1px solid var(--hr);
-		border-radius: 12px;
-		padding: 24px;
-		max-width: 400px;
-		width: 90vw;
-		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
-		animation: scaleIn 0.2s ease;
-	}
-	.settings-title {
-		font-size: 14px;
-		font-weight: 600;
-		color: var(--text);
-		margin-bottom: 16px;
-	}
-	.theme-grid {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 8px;
-	}
-	.theme-option {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 6px;
-		padding: 10px;
-		border: 1.5px solid var(--hr);
-		border-radius: 12px;
-		background: var(--bg);
-		cursor: pointer;
-		transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-		position: relative;
-		overflow: hidden;
-	}
-	.theme-option::after {
-		content: ''; position: absolute; inset: 0;
-		background: linear-gradient(135deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0) 50%, rgba(255, 255, 255, 0.1) 100%);
-		opacity: 0; transition: opacity 0.3s ease;
-		pointer-events: none;
-	}
-	.theme-option:hover {
-		border-color: var(--text-faded);
-		transform: translateY(-2px);
-		box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08), inset 0 1px 1px rgba(255, 255, 255, 0.2);
-	}
-	.theme-option:hover::after {
-		opacity: 1;
-	}
-	.theme-option:active {
-		transform: translateY(0);
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-	}
-	.theme-option.active {
-		border-color: var(--link);
-		background: var(--bg-secondary);
-	}
-	.theme-option span {
-		font-size: 11px;
-		color: var(--text-secondary);
-	}
-	.theme-preview {
-		width: 100%;
-		height: 40px;
-		border-radius: 4px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 16px;
-		font-weight: 500;
 	}
 
 	/* ========== Main content ========== */
@@ -3194,6 +2920,53 @@
 		color: var(--text-faded);
 	}
 
+	/* ========== Recent files (welcome) ========== */
+	.recent-files {
+		margin-top: 28px;
+		width: 420px;
+		max-width: 85vw;
+		text-align: left;
+	}
+	.recent-title {
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--text-faded);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		margin-bottom: 8px;
+	}
+	.recent-item {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		width: 100%;
+		text-align: left;
+		border: 1px solid transparent;
+		background: transparent;
+		padding: 8px 10px;
+		border-radius: 8px;
+		cursor: pointer;
+		transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+	}
+	.recent-item:hover {
+		background: var(--bg-secondary);
+		border-color: var(--hr);
+	}
+	.recent-name {
+		font-size: 13px;
+		color: var(--text-secondary);
+		font-weight: 500;
+	}
+	.recent-item:hover .recent-name {
+		color: var(--text);
+	}
+	.recent-path {
+		font-size: 11px;
+		color: var(--text-faded);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
 	/* ========== Loading ========== */
 	.loading {
 		display: flex;
