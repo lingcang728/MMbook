@@ -880,18 +880,57 @@
 		});
 	}
 
+	// Entering/leaving focus mode reflows the whole document (the article font
+	// scales up/down), so raw scrollTop no longer points at the same content.
+	// Capture the block under the anchor line (plus the ratio inside it) before
+	// the reflow, and scroll it back to the anchor line afterwards.
+	type ViewportAnchor = { element: HTMLElement; ratio: number };
+	let pendingExitAnchor: ViewportAnchor | null = null;
+
+	function captureViewportAnchor(): ViewportAnchor | null {
+		const article = getArticleElement();
+		if (!article || !contentEl) return null;
+		const anchorY = getFocusAnchorY();
+		let candidate: HTMLElement | null = null;
+		for (const child of Array.from(article.children)) {
+			if (!(child instanceof HTMLElement) || child.offsetHeight <= 0) continue;
+			const rect = child.getBoundingClientRect();
+			if (rect.top <= anchorY) {
+				candidate = child;
+			} else {
+				break;
+			}
+		}
+		if (!candidate) return null;
+		const rect = candidate.getBoundingClientRect();
+		const ratio = rect.height > 0 ? (anchorY - rect.top) / rect.height : 0;
+		return { element: candidate, ratio: Math.max(0, Math.min(1, ratio)) };
+	}
+
+	function restoreViewportAnchor(anchor: ViewportAnchor | null) {
+		if (!anchor || !contentEl || !anchor.element.isConnected) return;
+		const rect = anchor.element.getBoundingClientRect();
+		const currentY = rect.top + anchor.ratio * rect.height;
+		contentEl.scrollTop += currentY - getFocusAnchorY();
+	}
+
 	async function toggleFocusMode(nextState = !$focusMode) {
 		if (nextState === $focusMode) return;
 		if (nextState && !$currentFilePath) return;
 		if (nextState) {
+			const anchor = captureViewportAnchor();
 			$focusMode = true;
 			await tick();
-			enterFocusMode();
+			enterFocusMode(anchor);
 			return;
 		}
 		const exited = await exitFocusMode();
 		if (exited) {
 			$focusMode = false;
+			await tick();
+			restoreViewportAnchor(pendingExitAnchor);
+			pendingExitAnchor = null;
+			invalidateFocusMetrics();
 		}
 	}
 
@@ -2631,10 +2670,13 @@
 		setRootStylePropertyIfChanged(docStyle, "--anchor-y", `${anchorY}px`);
 	}
 
-	function enterFocusMode() {
+	function enterFocusMode(anchor: ViewportAnchor | null = null) {
 		refreshFocusBlocks();
 		const preservePosition = (contentEl?.scrollTop ?? 0) > 0;
 		applyFocusSpacing({ preservePosition });
+		// Correct for the focus-mode font reflow: put the block the reader was
+		// on back at the anchor line, so the closest-unit pick below hits it.
+		restoreViewportAnchor(anchor);
 		focusWheelDelta = 0;
 		lastFocusedIdx = -1;
 		lastFocusRenderSignature = "";
@@ -2664,6 +2706,9 @@
 			const saved = await finishEdit();
 			if (!saved) return false; // Block focus mode exit if save failed
 		}
+		// Capture while the focus-mode layout is still in effect; restored by
+		// toggleFocusMode after the exit reflow.
+		pendingExitAnchor = captureViewportAnchor();
 		clearFocusStyles();
 		clearFocusScrollActive();
 		if (focusUpdateFrame !== null) {

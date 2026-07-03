@@ -63,3 +63,4 @@ Frontend calls Rust via `invoke('read_markdown_file', {path})` → raw markdown 
 - **Focus mode styling is windowed**: only ~±8 units around the focus point carry inline styles/transitions; everything else is hidden by the CSS baseline (`[data-focus-block]` → `opacity: 0`). Never restyle all blocks — that was the long-document freeze.
 - **After any in-place article DOM change** call `reindexAfterArticleDomChange()` — search and focus indices reference live DOM nodes and go stale otherwise.
 - **Long jumps never smooth-scroll** (`getJumpBehavior`): beyond ~3 viewports they cut instantly.
+- **Focus mode enter/exit reflows the document** (article font scales 16↔18px), so raw `scrollTop` is not position-stable across the toggle. Always go through `captureViewportAnchor`/`restoreViewportAnchor` (anchor block at the viewport center + ratio inside it); otherwise the focus pick drifts by ~12.5% of scroll depth.
