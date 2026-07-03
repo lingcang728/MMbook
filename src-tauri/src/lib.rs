@@ -12,6 +12,9 @@ use tauri::{Emitter, RunEvent};
 pub struct ReadingState {
     pub scroll_position: f64,
     pub bookmarks: Vec<usize>,
+    /// Reading progress in [0, 1]; used by the welcome screen's continue entry.
+    #[serde(default)]
+    pub progress: f64,
 }
 
 #[derive(Serialize)]
@@ -215,6 +218,24 @@ fn save_reading_state(path: String, state: ReadingState) -> Result<(), String> {
     atomic_write_file(&sp, data.as_bytes())
 }
 
+/// Recent files list, stored as an opaque JSON string in the app state dir so
+/// it survives WebView cache clears (unlike localStorage).
+#[tauri::command]
+fn load_recent_files() -> Result<String, String> {
+    let path = state_dir().join("recent-files.json");
+    if path.exists() {
+        fs::read_to_string(&path).map_err(|e| e.to_string())
+    } else {
+        Ok("[]".to_string())
+    }
+}
+
+#[tauri::command]
+fn save_recent_files(json: String) -> Result<(), String> {
+    let path = state_dir().join("recent-files.json");
+    atomic_write_file(&path, json.as_bytes())
+}
+
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
@@ -233,6 +254,8 @@ pub fn run() {
             save_markdown_file,
             load_reading_state,
             save_reading_state,
+            load_recent_files,
+            save_recent_files,
             quit_app,
         ])
         .setup(|app| {

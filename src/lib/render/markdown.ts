@@ -9,11 +9,24 @@ import type { HighlighterCore, LanguageRegistration } from 'shiki/core';
 
 const sanitizeSchema = {
 	...defaultSchema,
+	// remark-rehype already prefixes footnote ids with "user-content"; letting
+	// sanitize clobber them again would break footnote links (href keeps the
+	// single prefix while the id gets a double one).
+	clobberPrefix: '',
 	attributes: {
 		...defaultSchema.attributes,
 		code: [
 			...((defaultSchema.attributes?.code as any[]) ?? []),
 			['className', /^language-[\w+-]+$/]
+		],
+		// remark-math output; rehype-katex picks these up after sanitizing.
+		span: [
+			...((defaultSchema.attributes?.span as any[]) ?? []),
+			['className', 'math', 'math-inline', 'math-display']
+		],
+		div: [
+			...((defaultSchema.attributes?.div as any[]) ?? []),
+			['className', 'math', 'math-inline', 'math-display']
 		]
 	}
 };
@@ -169,9 +182,83 @@ export interface TocItem {
 	id: string;
 }
 
+export interface FrontMatterEntry {
+	key: string;
+	value: string;
+}
+
 export interface RenderedMarkdownDocument {
 	html: string;
 	toc: TocItem[];
+	frontMatter: FrontMatterEntry[];
+}
+
+// Line-based YAML-lite parser: `key: value`, inline `[a, b]` arrays and
+// simple `- item` lists. Nested structures are skipped, not mangled.
+export function extractYamlFrontMatterEntries(source: string): FrontMatterEntry[] {
+	const lines = source.match(/.*(?:\r\n|\n|\r|$)/g) ?? [];
+	if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+	if (lines.length < 2) return [];
+
+	const firstLine = lineContent(lines[0] ?? '').replace(/^﻿/, '');
+	if (!/^---[ \t]*$/.test(firstLine)) return [];
+
+	let closingLineIndex = -1;
+	for (let i = 1; i < lines.length; i += 1) {
+		if (/^(---|\.\.\.)[ \t]*$/.test(lineContent(lines[i] ?? ''))) {
+			closingLineIndex = i;
+			break;
+		}
+	}
+	if (closingLineIndex === -1) return [];
+
+	const cleanScalar = (raw: string) => raw.trim().replace(/^["']|["']$/g, '');
+	const entries: FrontMatterEntry[] = [];
+	let pendingListKey: string | null = null;
+	let pendingListValues: string[] = [];
+
+	const flushPendingList = () => {
+		if (pendingListKey !== null && pendingListValues.length > 0) {
+			entries.push({ key: pendingListKey, value: pendingListValues.join('、') });
+		}
+		pendingListKey = null;
+		pendingListValues = [];
+	};
+
+	for (let i = 1; i < closingLineIndex; i += 1) {
+		const line = lineContent(lines[i] ?? '');
+
+		const listItem = /^\s+-\s+(.+)$/.exec(line);
+		if (listItem && pendingListKey !== null) {
+			pendingListValues.push(cleanScalar(listItem[1]));
+			continue;
+		}
+
+		const kv = /^([A-Za-z0-9_][\w .-]*):\s*(.*)$/.exec(line);
+		if (!kv) continue;
+		flushPendingList();
+
+		const key = kv[1].trim();
+		let value = kv[2].trim();
+		if (value === '') {
+			pendingListKey = key;
+			continue;
+		}
+		if (/^\[.*\]$/.test(value)) {
+			value = value
+				.slice(1, -1)
+				.split(',')
+				.map(cleanScalar)
+				.filter(Boolean)
+				.join('、');
+		} else {
+			value = cleanScalar(value);
+		}
+		if (value !== '') entries.push({ key, value });
+	}
+	flushPendingList();
+
+	return entries;
 }
 
 function decodeHtmlEntities(text: string): string {
@@ -307,19 +394,38 @@ async function highlightCodeBlocks(html: string): Promise<string> {
 export async function renderMarkdownDocument(source: string): Promise<RenderedMarkdownDocument> {
 	const toc: TocItem[] = [];
 	const renderSource = stripYamlFrontMatterForRender(source);
-	const result = await unified()
-		.use(remarkParse)
-		.use(remarkGfm)
+
+	// Math support is loaded lazily — documents without $…$ pay nothing.
+	const hasMath = /\$[^\s$]/.test(renderSource);
+	let remarkMath: any = null;
+	let rehypeKatex: any = null;
+	if (hasMath) {
+		try {
+			[remarkMath, rehypeKatex] = await Promise.all([
+				import('remark-math').then((m) => m.default),
+				import('rehype-katex').then((m) => m.default)
+			]);
+		} catch {
+			remarkMath = null;
+			rehypeKatex = null;
+		}
+	}
+
+	let pipeline: any = unified().use(remarkParse).use(remarkGfm);
+	if (remarkMath) pipeline = pipeline.use(remarkMath);
+	pipeline = pipeline
 		.use(remarkRehype, { allowDangerousHtml: true })
 		.use(rehypeRaw)
-		.use(rehypeSanitize, sanitizeSchema)
-		.use(rehypeDocumentMetadata, toc)
-		.use(rehypeStringify)
-		.process(renderSource);
+		.use(rehypeSanitize, sanitizeSchema);
+	if (rehypeKatex) pipeline = pipeline.use(rehypeKatex, { throwOnError: false });
+	pipeline = pipeline.use(rehypeDocumentMetadata, toc).use(rehypeStringify);
+
+	const result = await pipeline.process(renderSource);
 
 	return {
 		html: await highlightCodeBlocks(String(result)),
-		toc
+		toc,
+		frontMatter: extractYamlFrontMatterEntries(source)
 	};
 }
 

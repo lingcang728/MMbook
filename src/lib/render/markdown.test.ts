@@ -22,6 +22,26 @@ describe('renderMarkdown', () => {
 		expect(html.toLowerCase()).not.toContain('onerror=');
 	});
 
+	it('renders footnotes whose links match their target ids', async () => {
+		const html = await renderMarkdown('hello[^1]\n\n[^1]: the note text');
+
+		expect(html).toContain('href="#user-content-fn-1"');
+		expect(html).toContain('id="user-content-fn-1"');
+	});
+
+	it('renders math via KaTeX when the document contains $…$', async () => {
+		const html = await renderMarkdown('计算 $x^2 + y^2$ 的值');
+
+		expect(html).toContain('katex');
+	});
+
+	it('leaves escaped dollar signs alone', async () => {
+		const html = await renderMarkdown('价格是 \\$5 一斤');
+
+		expect(html).not.toContain('katex');
+		expect(html).toContain('$5');
+	});
+
 	it('keeps source position data attributes for editable blocks', async () => {
 		const html = await renderMarkdown('first paragraph\n\nsecond paragraph');
 

@@ -1,8 +1,25 @@
 <script lang="ts">
-	import { settingsOpen, currentTheme } from "$lib/stores/app";
+	import {
+		settingsOpen,
+		currentTheme,
+		fontScale,
+		clampFontScale,
+		FONT_SCALE_STEP,
+		readingLineHeight,
+		readingWidth,
+		readingFontFamily,
+		READING_LINE_HEIGHTS,
+		READING_WIDTHS,
+	} from "$lib/stores/app";
 	import { getThemePairs } from "$lib/theme/themes";
 
 	const themePairs = getThemePairs();
+
+	const widthLabels: Record<number, string> = { 680: "窄", 760: "标准", 840: "宽" };
+
+	function adjustFontScale(direction: number) {
+		$fontScale = clampFontScale($fontScale + direction * FONT_SCALE_STEP);
+	}
 </script>
 
 {#if $settingsOpen}
@@ -49,6 +66,65 @@
 						<span>{pair.label} 深色</span>
 					</button>
 				{/each}
+			</div>
+
+			<div class="settings-title typo-title">排版</div>
+			<div class="typo-rows">
+				<div class="typo-row">
+					<span class="typo-label">字号</span>
+					<div class="typo-options">
+						<button class="typo-btn" on:click={() => adjustFontScale(-1)} title="缩小 (Ctrl+-)">−</button>
+						<span class="typo-value">{Math.round($fontScale * 100)}%</span>
+						<button class="typo-btn" on:click={() => adjustFontScale(1)} title="放大 (Ctrl+=)">+</button>
+					</div>
+				</div>
+				<div class="typo-row">
+					<span class="typo-label">行距</span>
+					<div class="typo-options">
+						{#each READING_LINE_HEIGHTS as lh}
+							<button
+								class="typo-btn"
+								class:active={$readingLineHeight === lh}
+								on:click={() => ($readingLineHeight = lh)}
+							>
+								{lh.toFixed(1)}
+							</button>
+						{/each}
+					</div>
+				</div>
+				<div class="typo-row">
+					<span class="typo-label">栏宽</span>
+					<div class="typo-options">
+						{#each READING_WIDTHS as w}
+							<button
+								class="typo-btn"
+								class:active={$readingWidth === w}
+								on:click={() => ($readingWidth = w)}
+							>
+								{widthLabels[w]}
+							</button>
+						{/each}
+					</div>
+				</div>
+				<div class="typo-row">
+					<span class="typo-label">字体</span>
+					<div class="typo-options">
+						<button
+							class="typo-btn"
+							class:active={$readingFontFamily === "sans"}
+							on:click={() => ($readingFontFamily = "sans")}
+						>
+							黑体
+						</button>
+						<button
+							class="typo-btn typo-serif"
+							class:active={$readingFontFamily === "serif"}
+							on:click={() => ($readingFontFamily = "serif")}
+						>
+							宋体
+						</button>
+					</div>
+				</div>
 			</div>
 		</div>
 	</div>
@@ -135,6 +211,60 @@
 		justify-content: center;
 		font-size: 16px;
 		font-weight: 500;
+	}
+
+	.typo-title {
+		margin-top: 20px;
+	}
+	.typo-rows {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	.typo-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.typo-label {
+		font-size: 12px;
+		color: var(--text-secondary);
+	}
+	.typo-options {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.typo-btn {
+		min-width: 44px;
+		height: 28px;
+		padding: 0 10px;
+		border: 1.5px solid var(--hr);
+		border-radius: 8px;
+		background: var(--bg);
+		color: var(--text-secondary);
+		font-size: 12px;
+		cursor: pointer;
+		transition: all 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+	}
+	.typo-btn:hover {
+		border-color: var(--text-faded);
+		color: var(--text);
+		transform: translateY(-1px);
+	}
+	.typo-btn.active {
+		border-color: var(--link);
+		background: var(--bg-secondary);
+		color: var(--text);
+	}
+	.typo-serif {
+		font-family: Georgia, "Source Han Serif SC", "Noto Serif SC", "STSong", "SimSun", serif;
+	}
+	.typo-value {
+		min-width: 48px;
+		text-align: center;
+		font-size: 12px;
+		color: var(--text);
 	}
 
 	@keyframes fadeIn {
