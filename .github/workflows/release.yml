@@ -80,6 +80,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # Key is generated without a password; the variable must still exist.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tauriScript: npx tauri
           releaseId: ${{ needs.create-release.outputs.release_id }}
