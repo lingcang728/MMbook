@@ -4,27 +4,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MMbook | 为沉浸阅读而生的 Markdown 阅读器</title>
-    <meta name="description" content="MMbook 是一款基于 Tauri + Svelte 的极简 Markdown 阅读器。聚光灯专注模式、素纸/墨石/暮光主题、全局搜索、智能目录与代码高亮，让阅读回归纯粹。">
-    <meta name="keywords" content="Markdown 阅读器, Markdown Reader, MMbook, Tauri, Svelte, 专注模式, 沉浸式阅读, 文档阅读器, .md 文件阅读">
+    <title>沉浸阅读 ImmersiveReader | 知乎 · 播客 · Markdown 统一阅读</title>
+    <meta name="description" content="沉浸阅读（ImmersiveReader）把知乎归档、播客转写与 Markdown 精读放进同一座本地书库。聚光灯专注模式、统一书架、数据全部留在本机。">
+    <meta name="keywords" content="沉浸阅读, ImmersiveReader, Markdown 阅读器, 知乎归档, 播客转写, 专注模式, 本地书库, Tauri">
     <meta name="author" content="凌苍">
     <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
     <meta name="googlebot" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
-    <meta name="application-name" content="MMbook">
-    <meta name="apple-mobile-web-app-title" content="MMbook">
+    <meta name="application-name" content="沉浸阅读">
+    <meta name="apple-mobile-web-app-title" content="沉浸阅读">
     <meta property="og:type" content="website">
-    <meta property="og:site_name" content="MMbook">
-    <meta property="og:title" content="MMbook | 为沉浸阅读而生的 Markdown 阅读器">
-    <meta property="og:description" content="聚光灯专注模式 + 素纸主题 + 极致性能。让 Markdown 阅读像翻一本书。">
+    <meta property="og:site_name" content="沉浸阅读 ImmersiveReader">
+    <meta property="og:title" content="沉浸阅读 | 知乎 · 播客 · Markdown 统一阅读">
+    <meta property="og:description" content="统一书库 + 聚光灯专注模式。知乎归档、播客转写、Markdown 精读，数据全在本机。">
     <meta property="og:url" content="https://mmbook-opal.vercel.app/">
     <meta property="og:image" content="https://mmbook-opal.vercel.app/og-cover.png">
     <meta property="og:locale" content="zh_CN">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="MMbook | An Immersive Markdown Reader">
-    <meta name="twitter:description" content="A minimalist Markdown reader built with Tauri + Svelte. Spotlight focus mode, paper-themed UI, lightning fast.">
+    <meta name="twitter:title" content="ImmersiveReader | Unified local reading for Markdown, podcasts &amp; Zhihu">
+    <meta name="twitter:description" content="A local Windows app that unifies Markdown deep-reading, podcast transcription, and Zhihu archiving in one library.">
     <meta name="twitter:image" content="https://mmbook-opal.vercel.app/og-cover.png">
     <link rel="canonical" href="https://mmbook-opal.vercel.app/">
-    <link rel="alternate" type="text/plain" href="/llms.txt" title="MMbook LLMs Index">
+    <link rel="alternate" type="text/plain" href="/llms.txt" title="ImmersiveReader LLMs Index">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -34,12 +34,13 @@
     {
       "@context": "https://schema.org",
       "@type": "SoftwareApplication",
-      "name": "MMbook",
+      "name": "ImmersiveReader",
+      "alternateName": "沉浸阅读",
       "applicationCategory": "ProductivityApplication",
-      "operatingSystem": "Windows, macOS, Linux",
-      "description": "An immersive Markdown reader with spotlight focus mode, paper-themed UI and built-in code highlighting. Built with Tauri 2 + Svelte 5.",
+      "operatingSystem": "Windows",
+      "description": "A local Windows reading system that unifies Zhihu archiving, podcast transcription, and Markdown deep-reading in one library, with spotlight focus mode.",
       "url": "https://mmbook-opal.vercel.app/",
-      "downloadUrl": "https://github.com/lingcang728/MMbook/releases",
+      "downloadUrl": "https://github.com/lingcang728/ImmersiveReader",
       "softwareVersion": "Beta",
       "author": {
         "@type": "Person",
@@ -60,15 +61,15 @@
     <header class="navbar">
         <div class="container nav-container">
             <a href="#" class="logo">
-                <span class="logo-mark">书</span>
-                <span class="logo-text">MMbook</span>
+                <span class="logo-mark">沉</span>
+                <span class="logo-text">沉浸阅读</span>
             </a>
             <nav class="nav-links">
-                <a href="#features">特性</a>
-                <a href="#themes">主题</a>
-                <a href="#shortcuts">快捷键</a>
-                <a href="https://github.com/lingcang728/MMbook" target="_blank" rel="noopener noreferrer">GitHub</a>
-                <a href="#download" class="btn-primary btn-small">下载</a>
+                <a href="#features">能力</a>
+                <a href="#library">书库</a>
+                <a href="#focus">专注</a>
+                <a href="https://github.com/lingcang728/ImmersiveReader" target="_blank" rel="noopener noreferrer">GitHub</a>
+                <a href="#download" class="btn-primary btn-small">获取</a>
             </nav>
         </div>
     </header>
@@ -77,34 +78,34 @@
         <section class="hero">
             <div class="container hero-container">
                 <div class="hero-content">
-                    <div class="badge">📖 Beta · v0.1</div>
-                    <h1 class="hero-title">让 Markdown，<br>读起来像<span class="ink-stroke">一本书</span>。</h1>
-                    <p class="hero-subtitle">MMbook 是一款为个人开发者打造的极简 Markdown 阅读器。聚光灯专注模式、素纸主题与极致性能，让你的每一次阅读都不被打扰。</p>
+                    <div class="badge">📚 继任 MMbook · PodcastTranscriber · 知乎打包</div>
+                    <h1 class="hero-title">一座书库，<br>装下<span class="ink-stroke">三种阅读</span>。</h1>
+                    <p class="hero-subtitle">沉浸阅读（ImmersiveReader）把知乎归档、播客转写与 Markdown 精读放进同一桌面应用。数据留在本机，阅读体验继承自 MMbook 的聚光灯专注模式。</p>
                     <div class="hero-actions">
-                        <a href="https://github.com/lingcang728/MMbook/releases" class="btn-primary btn-large">
+                        <a href="https://github.com/lingcang728/ImmersiveReader" class="btn-primary btn-large">
                             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+                                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
                             </svg>
-                            免费下载
+                            打开 GitHub 项目
                         </a>
-                        <a href="https://github.com/lingcang728/MMbook" target="_blank" rel="noopener noreferrer" class="btn-secondary btn-large">
-                            ⭐ GitHub 点星
+                        <a href="https://github.com/lingcang728/ImmersiveReader#readme" target="_blank" rel="noopener noreferrer" class="btn-secondary btn-large">
+                            阅读说明
                         </a>
                     </div>
-                    <p class="hero-meta">支持 Windows · macOS · Linux · 安装包 &lt; 10MB</p>
+                    <p class="hero-meta">Windows 本地桌面 · 数据不出本机 · 开源免费</p>
                 </div>
                 <div class="hero-visual">
                     <div class="book-mockup">
                         <div class="book-toolbar">
                             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-                            <span class="book-filename">README.md</span>
+                            <span class="book-filename">Library / 精读.md</span>
                         </div>
                         <div class="book-page">
-                            <h3 class="mock-h">关于阅读这件事</h3>
-                            <p class="mock-p faded">真正的阅读不是把眼睛贴在屏幕上，<br>而是把灵魂放在文字里。</p>
-                            <p class="mock-p spotlight">当你滑过这一行，世界为它静下来 ——<br>这是 MMbook 独创的<strong>聚光灯模式</strong>，让此刻读到的段落自然亮起，无关的内容温柔淡出。</p>
-                            <p class="mock-p faded">于是你不再走神，<br>你只是，<br>在读。</p>
-                            <pre class="mock-code"><span class="code-kw">const</span> <span class="code-var">read</span> = (book) =&gt; book.<span class="code-fn">absorb</span>();</pre>
+                            <h3 class="mock-h">关于统一阅读这件事</h3>
+                            <p class="mock-p faded">知乎长文、播客笔记、本地 Markdown，<br>不必再在三个工具之间来回跳。</p>
+                            <p class="mock-p spotlight">当你滑过这一行，世界为它静下来 ——<br>这是继承自 MMbook 的<strong>聚光灯模式</strong>，让此刻读到的段落自然亮起。</p>
+                            <p class="mock-p faded">书架、进度、工具链，<br>都在同一处。<br>你只是，在读。</p>
+                            <pre class="mock-code"><span class="code-kw">const</span> <span class="code-var">library</span> = [zhihu, podcast, markdown];</pre>
                         </div>
                     </div>
                 </div>
@@ -114,103 +115,103 @@
         <section id="features" class="features section">
             <div class="container">
                 <div class="section-header text-center reveal">
-                    <h2 class="section-title">为阅读而做的每一处雕琢</h2>
-                    <p class="section-desc">不是又一个编辑器，是一个真正只为"读"服务的工具。</p>
+                    <h2 class="section-title">三合一，仍然只为阅读服务</h2>
+                    <p class="section-desc">不是堆功能，是把原本分散的工作流收进一座本地书库。</p>
                 </div>
                 <div class="features-grid">
                     <article class="feature-card reveal">
-                        <div class="feature-icon">👁️</div>
-                        <h3>聚光灯专注模式</h3>
-                        <p>当前段落 100% 高亮，前后段落 40% / 15% 三层渐变淡出，配合 300ms 缓动过渡。读到哪，光在哪。</p>
+                        <div class="feature-icon">📖</div>
+                        <h3>Markdown 精读</h3>
+                        <p>继承 MMbook：聚光灯专注、主题、搜索、目录、段落编辑。单文件打开、外部变更重载，专注长文。</p>
                     </article>
                     <article class="feature-card reveal">
-                        <div class="feature-icon">🎨</div>
-                        <h3>三对精心调色的主题</h3>
-                        <p>素纸、墨石、暮光 —— 每对主题都有深浅两色，色彩与字距经过反复调校，每个字都站得稳。</p>
+                        <div class="feature-icon">🎙️</div>
+                        <h3>播客转写</h3>
+                        <p>接入原 PodcastTranscriber：音频/视频进，中英双语 Markdown 出。角色分离、本地模型或云端 API。</p>
                     </article>
                     <article class="feature-card reveal">
-                        <div class="feature-icon">🔍</div>
-                        <h3>悬浮式全局搜索</h3>
-                        <p>macOS 风格的圆角搜索框，实时高亮命中位置，一键跳转。Ctrl+F 即可呼出。</p>
+                        <div class="feature-icon">🧠</div>
+                        <h3>知乎归档</h3>
+                        <p>原 Zhihu Packer 能力整合进桌面端：归档长文，写入统一书库，随时回到精读或连读。</p>
                     </article>
                     <article class="feature-card reveal">
-                        <div class="feature-icon">📑</div>
-                        <h3>智能目录大纲</h3>
-                        <p>自动提取 Markdown 标题层级，侧边栏目录支持一键跳转，再长的文档也不会迷路。</p>
+                        <div class="feature-icon">📚</div>
+                        <h3>统一本地书库</h3>
+                        <p>知乎 / 手动导入 / 其他来源分目录保存，manifest + 阅读进度同在本机，一份备份带走全部书目。</p>
                     </article>
                     <article class="feature-card reveal">
-                        <div class="feature-icon">✍️</div>
-                        <h3>双击即编辑</h3>
-                        <p>读着读着发现错别字？双击段落直接进入编辑态，改完即存。轻量、克制、随时回到阅读流。</p>
+                        <div class="feature-icon">🌐</div>
+                        <h3>精读 + 连读</h3>
+                        <p>精读在桌面端沉浸完成；连读可在系统浏览器按书目顺序阅读，并与桌面端共享进度。</p>
                     </article>
                     <article class="feature-card reveal">
-                        <div class="feature-icon">⚡</div>
-                        <h3>Rust + Tauri 极致性能</h3>
-                        <p>毫秒级冷启动，几十兆内存占用，安装包 &lt; 10MB。比浏览器轻一个数量级。</p>
+                        <div class="feature-icon">🔒</div>
+                        <h3>隐私优先</h3>
+                        <p>正文、图片、进度、登录态与转写配置均在本机。浏览器连读只绑定本地回环地址，退出即停。</p>
                     </article>
                 </div>
             </div>
         </section>
 
-        <section id="themes" class="themes section bg-paper-dark">
+        <section id="library" class="themes section bg-paper-dark">
             <div class="container">
                 <div class="section-header text-center reveal">
-                    <h2 class="section-title">主题不止是配色，是氛围</h2>
-                    <p class="section-desc">三对主题，一套阅读哲学。每一对都同时调好深浅色，让眼睛在白天与深夜都得到善待。</p>
+                    <h2 class="section-title">一座书库，三种入口</h2>
+                    <p class="section-desc">从书架顶部直接启动工具；临时打开不会污染长期书库，播客默认阅后即焚，主动导入才入库。</p>
                 </div>
                 <div class="themes-grid">
                     <div class="theme-card theme-suzhi reveal">
                         <div class="theme-preview">
-                            <span class="theme-h">素纸</span>
-                            <span class="theme-p">温暖的纸感，像翻一本日记</span>
+                            <span class="theme-h">知乎</span>
+                            <span class="theme-p">归档长文，按书入库</span>
                         </div>
                         <div class="theme-meta">
-                            <span class="theme-name">素纸 · Plain Paper</span>
-                            <span class="theme-tag">默认</span>
+                            <span class="theme-name">Zhihu Packer</span>
+                            <span class="theme-tag">归档</span>
                         </div>
                     </div>
                     <div class="theme-card theme-moshi reveal">
                         <div class="theme-preview">
-                            <span class="theme-h">墨石</span>
-                            <span class="theme-p">深邃的墨色，给夜晚的专注</span>
+                            <span class="theme-h">播客</span>
+                            <span class="theme-p">音频变成可读笔记</span>
                         </div>
                         <div class="theme-meta">
-                            <span class="theme-name">墨石 · Ink Stone</span>
-                            <span class="theme-tag">深色</span>
+                            <span class="theme-name">Podcast Transcriber</span>
+                            <span class="theme-tag">转写</span>
                         </div>
                     </div>
                     <div class="theme-card theme-muguang reveal">
                         <div class="theme-preview">
-                            <span class="theme-h">暮光</span>
-                            <span class="theme-p">黄昏的色温，像一杯午后的茶</span>
+                            <span class="theme-h">Markdown</span>
+                            <span class="theme-p">导入文件夹或临时打开</span>
                         </div>
                         <div class="theme-meta">
-                            <span class="theme-name">暮光 · Twilight</span>
-                            <span class="theme-tag">暖色</span>
+                            <span class="theme-name">Deep Reader</span>
+                            <span class="theme-tag">精读</span>
                         </div>
                     </div>
                 </div>
             </div>
         </section>
 
-        <section id="shortcuts" class="shortcuts section">
+        <section id="focus" class="shortcuts section">
             <div class="container">
                 <div class="section-header text-center reveal">
-                    <h2 class="section-title">键盘比鼠标更接近思考</h2>
-                    <p class="section-desc">为常用动作准备好快捷键，手不用离开 home row。</p>
+                    <h2 class="section-title">阅读体验，仍来自 MMbook</h2>
+                    <p class="section-desc">聚光灯、主题与快捷键保留；旧项目已弃用，请使用本仓库。</p>
                 </div>
                 <div class="shortcuts-table reveal">
                     <div class="sc-row sc-head">
                         <span>操作</span>
-                        <span>Windows / Linux</span>
-                        <span>macOS</span>
+                        <span>Windows</span>
+                        <span>说明</span>
                     </div>
-                    <div class="sc-row"><span>打开文件</span><span><kbd>Ctrl</kbd> + <kbd>O</kbd></span><span><kbd>⌘</kbd> + <kbd>O</kbd></span></div>
-                    <div class="sc-row"><span>开关搜索</span><span><kbd>Ctrl</kbd> + <kbd>F</kbd></span><span><kbd>⌘</kbd> + <kbd>F</kbd></span></div>
-                    <div class="sc-row"><span>开关目录</span><span><kbd>Ctrl</kbd> + <kbd>T</kbd></span><span><kbd>⌘</kbd> + <kbd>T</kbd></span></div>
-                    <div class="sc-row"><span>专注模式</span><span><kbd>F11</kbd> 或 <kbd>Ctrl+Shift+F</kbd></span><span><kbd>F11</kbd> 或 <kbd>⌘+⇧+F</kbd></span></div>
-                    <div class="sc-row"><span>设置</span><span><kbd>Ctrl</kbd> + <kbd>,</kbd></span><span><kbd>⌘</kbd> + <kbd>,</kbd></span></div>
-                    <div class="sc-row"><span>退出弹窗 / 模式</span><span><kbd>Esc</kbd></span><span><kbd>Esc</kbd></span></div>
+                    <div class="sc-row"><span>打开文件</span><span><kbd>Ctrl</kbd> + <kbd>O</kbd></span><span>临时打开 Markdown</span></div>
+                    <div class="sc-row"><span>开关搜索</span><span><kbd>Ctrl</kbd> + <kbd>F</kbd></span><span>全局高亮跳转</span></div>
+                    <div class="sc-row"><span>开关目录</span><span><kbd>Ctrl</kbd> + <kbd>T</kbd></span><span>命令面板式大纲</span></div>
+                    <div class="sc-row"><span>专注模式</span><span><kbd>F11</kbd> / <kbd>Ctrl+Shift+F</kbd></span><span>聚光灯段落聚焦</span></div>
+                    <div class="sc-row"><span>设置</span><span><kbd>Ctrl</kbd> + <kbd>,</kbd></span><span>主题与排版</span></div>
+                    <div class="sc-row"><span>退出弹窗 / 模式</span><span><kbd>Esc</kbd></span><span>逐层关闭</span></div>
                 </div>
             </div>
         </section>
@@ -218,16 +219,16 @@
         <section id="download" class="cta section bg-paper-dark">
             <div class="container text-center">
                 <div class="cta-card reveal">
-                    <h2 class="cta-title">准备好打开第一本书了吗？</h2>
-                    <p class="cta-desc">安装包不到 10MB，关联 .md 文件后双击即开。</p>
+                    <h2 class="cta-title">从 ImmersiveReader 开始</h2>
+                    <p class="cta-desc">MMbook 与 PodcastTranscriber 仓库已弃用归档。最新代码、说明与后续发布，都在这里。</p>
                     <div class="cta-actions">
-                        <a href="https://github.com/lingcang728/MMbook/releases" class="btn-primary btn-large">
+                        <a href="https://github.com/lingcang728/ImmersiveReader" class="btn-primary btn-large">
                             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+                                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
                             </svg>
-                            免费下载 MMbook
+                            前往 ImmersiveReader
                         </a>
-                        <a href="https://github.com/lingcang728/MMbook" target="_blank" rel="noopener noreferrer" class="btn-secondary btn-large">
+                        <a href="https://github.com/lingcang728/ImmersiveReader#readme" target="_blank" rel="noopener noreferrer" class="btn-secondary btn-large">
                             ⭐ 在 GitHub 上点星
                         </a>
                     </div>
@@ -239,16 +240,16 @@
     <footer class="footer">
         <div class="container footer-container">
             <div class="footer-brand">
-                <span class="logo-mark">书</span> MMbook
-                <p class="footer-tagline">为沉浸阅读而生的 Markdown 阅读器</p>
+                <span class="logo-mark">沉</span> 沉浸阅读
+                <p class="footer-tagline">ImmersiveReader · 本地统一阅读系统</p>
             </div>
             <div class="footer-links">
-                <a href="https://github.com/lingcang728/MMbook" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
-                <a href="https://github.com/lingcang728/MMbook/releases" target="_blank" rel="noopener noreferrer">下载</a>
-                <a href="https://github.com/lingcang728/MMbook/issues" target="_blank" rel="noopener noreferrer">反馈</a>
+                <a href="https://github.com/lingcang728/ImmersiveReader" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
+                <a href="https://github.com/lingcang728/ImmersiveReader#readme" target="_blank" rel="noopener noreferrer">使用说明</a>
+                <a href="https://github.com/lingcang728/ImmersiveReader/issues" target="_blank" rel="noopener noreferrer">反馈</a>
             </div>
             <div class="footer-copyright">
-                &copy; 2026 凌苍 · 由 Tauri 与一颗安静的心驱动
+                &copy; 2026 凌苍 · 由 MMbook / PodcastTranscriber / Zhihu Packer 合流而成
             </div>
         </div>
     </footer>
