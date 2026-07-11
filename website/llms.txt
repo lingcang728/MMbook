@@ -15,7 +15,7 @@ ImmersiveReader is the successor to **MMbook**, **PodcastTranscriber**, and **Zh
 
 ## Links
 
-- Product site (this page): https://mmbook-opal.vercel.app/
+- Product site (this page): https://immersivereader.vercel.app/
 - Source code: https://github.com/lingcang728/ImmersiveReader
 - Issues / feedback: https://github.com/lingcang728/ImmersiveReader/issues
 
