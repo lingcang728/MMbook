@@ -1,3 +1,16 @@
+﻿> [!CAUTION]
+> ## ⚠️ 本仓库已弃用（Deprecated）
+>
+> **MMbook** 的功能已合并进统一桌面应用 **[ImmersiveReader](https://github.com/lingcang728/ImmersiveReader)**。
+>
+> - 本仓库 **不再维护**，也不会再发布新版本
+> - 历史代码与文档仍保留，仅供参考
+> - 请使用最新项目：👉 **https://github.com/lingcang728/ImmersiveReader**
+>
+> **This repository is deprecated and no longer maintained.**  
+> Development continues in **[ImmersiveReader](https://github.com/lingcang728/ImmersiveReader)** (Markdown reader + podcast transcriber + more).
+
+---
 # MMbook 📚
 ---
 **MMbook** 是一款为个人开发者量身定制的 Markdown 阅读器，旨在提供最纯粹、最沉浸的阅读体验。它不仅尊重你的内容，更专注于通过精致的视觉设计和独特的“专注模式”来提升阅读质量。
